@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateMoveOffset } from './walk';
+import { calculateMoveOffset, resolveStep, canStand } from './walk';
 
 describe('Walk Controller Movement & Collision Math', () => {
   it('moves north when heading is 0 and forward is positive', () => {
@@ -30,7 +30,7 @@ describe('Walk Controller Movement & Collision Math', () => {
     expect(result.lat).toBeCloseTo(0, 4);
   });
 
-  it('stops a step from crossing a thin wall using sub-steps and clearance checks', () => {
+  it('stops a step from crossing a thin wall using sub-steps and resolveStep', () => {
     const startLon = 0;
     const startLat = 0;
     const heading = 0; // Facing North
@@ -44,21 +44,20 @@ describe('Walk Controller Movement & Collision Math', () => {
       return distanceNorthMeters >= 0.3 && distanceNorthMeters <= 0.6;
     };
 
-    const subSteps = 4;
-    let validLat = startLat;
+    // Exercise resolveStep directly (testing the exported function with sub-steps)
+    const resolved = resolveStep(startLon, startLat, target.lon, target.lat, isBlocked, 0.1);
+    const finalDistanceNorth = resolved.lat * 111320;
 
-    for (let i = 1; i <= subSteps; i++) {
-      const fraction = i / subSteps;
-      const subLat = startLat + (target.lat - startLat) * fraction;
-
-      if (isBlocked(startLon, subLat)) {
-        break;
-      } else {
-        validLat = subLat;
-      }
-    }
-
-    const finalDistanceNorth = validLat * 111320;
     expect(finalDistanceNorth).toBeLessThan(0.3);
+  });
+
+  it('canStand checks radial clearance around position', () => {
+    const isBlocked = (lon: number, lat: number) => {
+      // Block a point slightly east
+      return lon > 0.00001;
+    };
+
+    // Center is clear, but radial clearance hits blocked zone
+    expect(canStand(0, 0, isBlocked, 0.3)).toBe(false);
   });
 });

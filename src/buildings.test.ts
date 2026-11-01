@@ -192,3 +192,184 @@ describe('Overpass footprints', () => {
   });
 });
 
+import { vi } from 'vitest';
+import {
+  fetchOverpassWithFallback,
+} from './buildings';
+
+describe('Overpass mirror fallback', () => {
+  const endpoints = [
+    'https://first.example/api/interpreter',
+    'https://second.example/api/interpreter',
+    'https://third.example/api/interpreter',
+  ];
+
+  const success = {
+    elements: [{ type: 'way', id: 123 }],
+  };
+
+  it('tries mirrors in order after HTTP and network failures', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 504,
+      })
+      .mockRejectedValueOnce(
+        new TypeError('Network error'),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => success,
+      });
+
+    const result = await fetchOverpassWithFallback(
+      '[out:json];out;',
+      {
+        endpoints,
+        fetcher: fetcher as unknown as typeof fetch,
+      },
+    );
+
+    expect(result).toEqual(success);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+
+    for (let i = 0; i < endpoints.length; i++) {
+      expect(fetcher.mock.calls[i][0]).toContain(
+        endpoints[i],
+      );
+    }
+  });
+
+  it('stops at the first successful endpoint', async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => success,
+    });
+
+    await fetchOverpassWithFallback(
+      'test',
+      {
+        endpoints,
+        fetcher: fetcher as unknown as typeof fetch,
+      },
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts an empty result without retrying', async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ elements: [] }),
+    });
+
+    const result = await fetchOverpassWithFallback(
+      'test',
+      {
+        endpoints,
+        fetcher: fetcher as unknown as typeof fetch,
+      },
+    );
+
+    expect(result.elements).toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries after malformed JSON', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ error: 'broken' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => success,
+      });
+
+    const result = await fetchOverpassWithFallback(
+      'test',
+      {
+        endpoints,
+        fetcher: fetcher as unknown as typeof fetch,
+      },
+    );
+
+    expect(result).toEqual(success);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports an error when all mirrors fail', async () => {
+    const fetcher = vi.fn().mockRejectedValue(
+      new TypeError('TLS failure'),
+    );
+
+    await expect(
+      fetchOverpassWithFallback('test', {
+        endpoints,
+        fetcher: fetcher as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow('All 3 Overpass endpoints failed');
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not try another mirror after cancellation', async () => {
+    const controller = new AbortController();
+
+    const fetcher = vi.fn().mockImplementation(
+      async () => {
+        controller.abort(
+          new DOMException('Cancelled', 'AbortError'),
+        );
+        throw new DOMException(
+          'Cancelled',
+          'AbortError',
+        );
+      },
+    );
+
+    await expect(
+      fetchOverpassWithFallback('test', {
+        endpoints,
+        signal: controller.signal,
+        fetcher: fetcher as unknown as typeof fetch,
+      }),
+    ).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves to the next mirror after a timeout', async () => {
+    const fetcher = vi.fn()
+      .mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener(
+              'abort',
+              () => reject(
+                new DOMException('Timed out', 'AbortError'),
+              ),
+              { once: true },
+            );
+          }),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => success,
+      });
+
+    const result = await fetchOverpassWithFallback(
+      'test',
+      {
+        endpoints,
+        timeoutMs: 15,
+        fetcher: fetcher as unknown as typeof fetch,
+      },
+    );
+
+    expect(result).toEqual(success);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});

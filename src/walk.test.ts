@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateMoveOffset, resolveStep } from './walk';
+import { calculateMoveOffset, findFreeStart, resolveStep } from './walk';
 
 describe('Walk Controller Movement Math', () => {
   it('moves north when heading is 0 and forward is positive', () => {
@@ -109,5 +109,19 @@ describe('resolveStep (ground, slopes, unloaded terrain, sliding)', () => {
     const s = resolveStep({ lon: 0, lat: 0, ground: 10 }, 0.1 * M, 0.1 * M, () => 10, { ...rules, isBlocked: wallNorth });
     expect(s.lon).toBeCloseTo(0.1 * M, 12); // kept the east component
     expect(s.lat).toBe(0);
+  });
+});
+
+describe('findFreeStart', () => {
+  it('keeps a free start point unchanged', () => {
+    expect(findFreeStart(1, 2, () => false)).toEqual({ lon: 1, lat: 2 });
+    expect(findFreeStart(1, 2)).toEqual({ lon: 1, lat: 2 });
+  });
+  it('steps out of a building to the nearest free spot', () => {
+    // 10 m square building around the origin
+    const inBox = (lon: number, lat: number) => Math.abs(lat * 111320) < 5 && Math.abs(lon * 111320) < 5;
+    const s = findFreeStart(0, 0, inBox);
+    expect(inBox(s.lon, s.lat)).toBe(false);
+    expect(Math.hypot(s.lon, s.lat) * 111320).toBeLessThanOrEqual(8);
   });
 });

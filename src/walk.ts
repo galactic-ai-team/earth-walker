@@ -143,6 +143,29 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return typeof el.tagName === 'string' && /^(INPUT|TEXTAREA|SELECT)$/i.test(el.tagName);
 }
 
+/**
+ * If the start point is inside a building (e.g. a preset centred on a landmark),
+ * search outward in 2 m rings (16 directions, up to 40 m) for the nearest free spot.
+ */
+export function findFreeStart(
+  lon: number,
+  lat: number,
+  isBlocked?: (lon: number, lat: number) => boolean,
+): { lon: number; lat: number } {
+  if (!isBlocked || !isBlocked(lon, lat)) return { lon, lat };
+  const mPerDegLat = 111320;
+  const mPerDegLon = 111320 * Math.cos(CesiumMath.toRadians(lat));
+  for (let r = 2; r <= 40; r += 2) {
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const cLon = lon + (Math.sin(a) * r) / mPerDegLon;
+      const cLat = lat + (Math.cos(a) * r) / mPerDegLat;
+      if (!isBlocked(cLon, cLat)) return { lon: cLon, lat: cLat };
+    }
+  }
+  return { lon, lat };
+}
+
 export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   const eyeHeight = opts.eyeHeight ?? 1.7; // 1.7m average eye height
   const baseSpeed = opts.moveSpeed ?? 3.0; // brisk walk; 1.4 m/s is real-life but feels glacial on a mountain
@@ -292,8 +315,10 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       if (enabled) return;
       enabled = true;
       hasGround = false;
-      stance = { lon: startLon, lat: startLat, ground: 0 };
-      heading = 0;
+      const start = findFreeStart(startLon, startLat, rules.isBlocked);
+      stance = { lon: start.lon, lat: start.lat, ground: 0 };
+      // Keep facing wherever the camera was looking (presets and permalinks set a heading).
+      heading = viewer.camera.heading;
       pitch = 0;
       lastTime = performance.now();
 

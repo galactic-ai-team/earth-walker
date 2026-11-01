@@ -1,32 +1,42 @@
 import { Viewer, Cartesian3, Math as CesiumMath } from 'cesium';
-import { tryHeightAt } from './terrain';
+import { tryHeightAt, GroundSampler } from './terrain';
 
 export interface WalkOptions {
   isBlocked?: (lon: number, lat: number) => boolean;
-  eyeHeight?: number; // meters above ground
-  moveSpeed?: number; // meters per second
+  eyeHeight?: number;
+  moveSpeed?: number;
   runMultiplier?: number;
   mouseSensitivity?: number;
   collisionRadius?: number; // clearance radius around player (default 0.3m)
 }
 
+export interface Stance {
+  lon: number;
+  lat: number;
+  heading: number;
+  pitch: number;
+}
+
+export interface StepRules {
+  isBlocked?: (lon: number, lat: number) => boolean;
+  maxSlope?: number; // tan(angle), default ~0.839 (40 deg)
+  collisionRadius?: number;
+}
+
 /**
- * Pure math: calculate new longitude and latitude given current position, heading, and movement offsets.
- * 1 degree latitude ≈ 111,320 meters.
- * 1 degree longitude ≈ 111,320 * cos(latitude) meters.
+ * Pure math: calculate new movement offset given heading and inputs.
  */
 export function calculateMoveOffset(
   currentLon: number,
   currentLat: number,
   headingRad: number,
-  forward: number, // positive = forward, negative = backward
-  right: number,   // positive = right, negative = left
+  forward: number,
+  right: number,
   distanceMeters: number
 ): { lon: number; lat: number } {
   const totalForward = forward * distanceMeters;
   const totalRight = right * distanceMeters;
 
-  // Corrected strafe directions (A = left, D = right)
   const dNorth = totalForward * Math.cos(headingRad) - totalRight * Math.sin(headingRad);
   const dEast = totalForward * Math.sin(headingRad) + totalRight * Math.cos(headingRad);
 
@@ -44,7 +54,7 @@ export function calculateMoveOffset(
 }
 
 /**
- * Check if a position is blocked, including a radial clearance ring around the player
+ * Checks if a position is blocked, including a radial clearance ring (0.3m)
  * to prevent the camera/body from clipping into walls.
  */
 export function canStand(
@@ -68,41 +78,75 @@ export function canStand(
 }
 
 /**
- * Resolves movement with 4 sub-steps per frame to prevent tunneling through thin walls,
- * with wall sliding support.
+ * Claude's core step resolver enhanced with 4 sub-steps and radial clearance checks,
+ * preserving slope look-ahead, wall sliding, and ground sampling.
  */
 export function resolveStep(
-  startLon: number,
-  startLat: number,
-  targetLon: number,
-  targetLat: number,
-  isBlocked?: (lon: number, lat: number) => boolean,
-  radiusMeters = 0.3
+  stance: Stance,
+  dLon: number,
+  dLat: number,
+  ground: GroundSampler,
+  rules: StepRules = {}
 ): { lon: number; lat: number } {
+  const radius = rules.collisionRadius ?? 0.3;
+  const maxSlope = rules.maxSlope ?? 0.839; // ~40 degrees
   const subSteps = 4;
-  let validLon = startLon;
-  let validLat = startLat;
 
-  for (let i = 1; i <= subSteps; i++) {
-    const fraction = i / subSteps;
-    const subLon = startLon + (targetLon - startLon) * fraction;
-    const subLat = startLat + (targetLat - startLat) * fraction;
+  const subDLon = dLon / subSteps;
+  const subDLat = dLat / subSteps;
 
-    if (!canStand(subLon, subLat, isBlocked, radiusMeters)) {
-      // Wall sliding: try sliding along X (lon) or Z (lat) individually if blocked
-      if (canStand(subLon, validLat, isBlocked, radiusMeters)) {
-        validLon = subLon;
-      } else if (canStand(validLon, subLat, isBlocked, radiusMeters)) {
-        validLat = subLat;
-      }
-      break;
+  let currentLon = stance.lon;
+  let currentLat = stance.lat;
+  let currentHeight = ground(currentLon, currentLat);
+
+  for (let step = 0; step < subSteps; step++) {
+    const targetLon = currentLon + subDLon;
+    const targetLat = currentLat + subDLat;
+
+    // 1. Radial clearance and obstacle check
+    let validLon = currentLon;
+    let validLat = currentLat;
+
+    if (canStand(targetLon, targetLat, rules.isBlocked, radius)) {
+      validLon = targetLon;
+      validLat = targetLat;
     } else {
-      validLon = subLon;
-      validLat = subLat;
+      // Wall sliding: try sliding along Lon or Lat independently
+      if (canStand(targetLon, currentLat, rules.isBlocked, radius)) {
+        validLon = targetLon;
+      } else if (canStand(currentLon, targetLat, rules.isBlocked, radius)) {
+        validLat = targetLat;
+      } else {
+        break; // Completely blocked
+      }
     }
+
+    // 2. Ground height and slope checks
+    const targetHeight = ground(validLon, validLat);
+    if (targetHeight === undefined) {
+      // Unloaded tile: hold position for this sub-step
+      break;
+    }
+
+    if (currentHeight !== undefined) {
+      const heightDiff = targetHeight - currentHeight;
+      const horizontalDist = Math.hypot(
+        (validLat - currentLat) * 111320,
+        (validLon - currentLon) * 111320 * Math.cos(CesiumMath.toRadians(currentLat))
+      );
+
+      if (horizontalDist > 0 && heightDiff / horizontalDist > maxSlope) {
+        // Too steep, slope limit reached
+        break;
+      }
+    }
+
+    currentLon = validLon;
+    currentLat = validLat;
+    currentHeight = targetHeight;
   }
 
-  return { lon: validLon, lat: validLat };
+  return { lon: currentLon, lat: currentLat };
 }
 
 export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
@@ -184,34 +228,26 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
       const stepDistance = speed * dt;
       const rawTarget = calculateMoveOffset(lon, lat, heading, forward, right, stepDistance);
-      
-      // Resolve movement with sub-steps and wall sliding
-      const resolved = resolveStep(lon, lat, rawTarget.lon, rawTarget.lat, opts.isBlocked, collisionRadius);
+      const dLon = rawTarget.lon - lon;
+      const dLat = rawTarget.lat - lat;
+
+      const groundSampler: GroundSampler = (l, lt) => tryHeightAt(l, lt);
+      const resolved = resolveStep(
+        { lon, lat, heading, pitch },
+        dLon,
+        dLat,
+        groundSampler,
+        { isBlocked: opts.isBlocked, collisionRadius }
+      );
+
       targetLon = resolved.lon;
       targetLat = resolved.lat;
     }
 
-    // Unloaded-tile guard: tryHeightAt returns undefined while loading
     const groundHeight = tryHeightAt(targetLon, targetLat);
     if (groundHeight === undefined) {
-      // Hold position and wait for tile to load
       animationFrameId = requestAnimationFrame(update);
       return;
-    }
-
-    // 40-degree uphill slope limit (~0.839 tan)
-    if (currentHeight !== null) {
-      const heightDiff = groundHeight - currentHeight;
-      const horizontalDist = Math.hypot(
-        (targetLat - lat) * 111320,
-        (targetLon - lon) * 111320 * Math.cos(CesiumMath.toRadians(lat))
-      );
-      const maxSlope = 0.839;
-      if (horizontalDist > 0 && heightDiff / horizontalDist > maxSlope) {
-        // Too steep, cancel horizontal move
-        targetLon = lon;
-        targetLat = lat;
-      }
     }
 
     lon = targetLon;

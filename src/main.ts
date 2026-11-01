@@ -8,6 +8,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { createTerrainProvider } from './terrain';
 import { addImageryLayers, tuneTileStreaming } from './imagery';
 import { PRESETS, type CameraPreset } from './presets';
+import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
@@ -57,7 +58,7 @@ function refreshBuildings(lon: number, lat: number, height: number): void {
 }
 
 const panel = document.getElementById('presets')!;
-for (const p of PRESETS) {
+for (const p of [...PRESETS, ...EXTRA_PRESETS]) {
   const b = document.createElement('button');
   b.textContent = p.label;
   b.dataset.preset = p.id;
@@ -65,6 +66,7 @@ for (const p of PRESETS) {
   panel.appendChild(b);
 }
 
+mountSearchBox(viewer); // lane 5 (Nova): place search + teleport
 import { createWalkController } from './walk';
 import { isBlocked } from './buildings'; // GPT-6's building collision export
 

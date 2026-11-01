@@ -2,13 +2,14 @@
  * Earth Walker — OSM buildings
  * GPT-6 / lane 3
  *
- * Keyless OpenStreetMap footprints from public Overpass.
+ * Keyless OSM building footprints from public Overpass instances.
+ * Ordered mirror fallback, per-endpoint timeout, cancellation.
+ *
  * Cesium polygons use absolute metres on Claude's terrain datum.
- * Collision uses the original lon/lat footprints, independent
- * of Cesium's asynchronous entity rendering.
+ * Collision uses original lon/lat footprints.
  *
  * Scope v1: closed OSM building ways. Multipolygon relations,
- * roof geometry and interior courtyards are future work.
+ * detailed roof geometry and interior courtyards are future work.
  */
 
 import {
@@ -25,6 +26,15 @@ import { heightAt } from './terrain';
 export const OVERPASS_URL =
   'https://overpass-api.de/api/interpreter';
 
+export const OVERPASS_ENDPOINTS: readonly string[] = [
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://z.overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  OVERPASS_URL,
+];
+
+export const OVERPASS_TIMEOUT_MS = 10_000;
 export const DEFAULT_BUILDING_HEIGHT_M = 10;
 export const METRES_PER_LEVEL = 3;
 
@@ -70,22 +80,146 @@ export interface BuildingFootprint {
   };
 }
 
+export interface OverpassFetchOptions {
+  endpoints?: readonly string[];
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  fetcher?: typeof fetch;
+}
+
 let activeFootprints: BuildingFootprint[] = [];
 let activeEntities: Entity[] = [];
 let activeViewer: Viewer | null = null;
 let requestGeneration = 0;
 let pendingRequest: AbortController | null = null;
 
-/** Parse OSM length values in metres. Supports "12", "12 m", "40 ft". */
+/**
+ * Fetch one Overpass query through an ordered mirror list.
+ *
+ * - HTTP errors, network errors, malformed responses and timeouts
+ *   cause the next endpoint to be tried.
+ * - A valid empty elements array is a successful result.
+ * - Caller cancellation stops the entire chain immediately.
+ * - No automatic concurrent retries against public servers.
+ *
+ * The fetcher and endpoints can be injected for offline tests.
+ */
+export async function fetchOverpassWithFallback(
+  query: string,
+  options: OverpassFetchOptions = {},
+): Promise<OverpassResponse> {
+  const endpoints =
+    options.endpoints ?? OVERPASS_ENDPOINTS;
+  const timeoutMs =
+    options.timeoutMs ?? OVERPASS_TIMEOUT_MS;
+  const fetcher = options.fetcher ?? fetch;
+  const parentSignal = options.signal;
+
+  if (endpoints.length === 0) {
+    throw new Error('Overpass: no endpoints configured');
+  }
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('Overpass: invalid timeout');
+  }
+
+  const errors: string[] = [];
+
+  for (const endpoint of endpoints) {
+    if (parentSignal?.aborted) {
+      throw parentSignal.reason ??
+        new DOMException('Request cancelled', 'AbortError');
+    }
+
+    const controller = new AbortController();
+    let timedOut = false;
+
+    const cancel = (): void => {
+      controller.abort(
+        parentSignal?.reason ??
+        new DOMException('Request cancelled', 'AbortError'),
+      );
+    };
+
+    parentSignal?.addEventListener('abort', cancel, {
+      once: true,
+    });
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort(
+        new DOMException(
+          'Overpass endpoint timed out',
+          'TimeoutError',
+        ),
+      );
+    }, timeoutMs);
+
+    try {
+      const separator = endpoint.includes('?') ? '&' : '?';
+      const url =
+        `${endpoint}${separator}data=${encodeURIComponent(query)}`;
+
+      const response = await fetcher(url, {
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data: unknown = await response.json();
+
+      if (
+        !data ||
+        typeof data !== 'object' ||
+        !Array.isArray(
+          (data as Partial<OverpassResponse>).elements,
+        )
+      ) {
+        throw new Error('Invalid Overpass JSON response');
+      }
+
+      return data as OverpassResponse;
+    } catch (error) {
+      // A teleport or explicit clear must never continue
+      // querying other mirrors.
+      if (parentSignal?.aborted) {
+        throw parentSignal.reason ??
+          new DOMException('Request cancelled', 'AbortError');
+      }
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      errors.push(
+        `${endpoint}: ${timedOut ? 'timeout' : message}`,
+      );
+    } finally {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener('abort', cancel);
+    }
+  }
+
+  throw new Error(
+    `All ${endpoints.length} Overpass endpoints failed:\n` +
+      errors.join('\n'),
+  );
+}
+
+/** Parse OSM length values in metres. */
 export function parseLength(
   raw: string | undefined,
 ): number | null {
   if (!raw) return null;
 
   const value = raw.trim().replace(',', '.');
-  const match = /^(\d+(?:\.\d+)?)\s*(m|metres?|meters?|ft|feet|foot|')?$/i.exec(
-    value,
-  );
+  const match =
+    /^(\d+(?:\.\d+)?)\s*(m|metres?|meters?|ft|feet|foot|')?$/i.exec(
+      value,
+    );
 
   if (!match) return null;
 
@@ -93,6 +227,7 @@ export function parseLength(
   if (!Number.isFinite(number) || number < 0) return null;
 
   const unit = match[2]?.toLowerCase();
+
   return unit === 'ft' ||
     unit === 'feet' ||
     unit === 'foot' ||
@@ -124,10 +259,12 @@ export function parseBuildingHeight(
         METRES_PER_LEVEL,
   );
 
+  const buildingLevels = levels(tags['building:levels']);
+
   const totalHeight =
     parseLength(tags.height) ??
-    (levels(tags['building:levels']) !== null
-      ? levels(tags['building:levels'])! * METRES_PER_LEVEL
+    (buildingLevels !== null
+      ? buildingLevels * METRES_PER_LEVEL
       : minHeightM + DEFAULT_BUILDING_HEIGHT_M);
 
   return {
@@ -179,12 +316,7 @@ function ringCenter(ring: readonly LonLat[]): LonLat {
   return [lon / ring.length, lat / ring.length];
 }
 
-/**
- * Pure parser for Overpass "way[building]; out geom".
- *
- * Invalid geometries are skipped rather than creating
- * invisible collision walls.
- */
+/** Pure parser for Overpass building ways with `out geom`. */
 export function parseOverpassBuildings(
   data: OverpassResponse,
 ): BuildingFootprint[] {
@@ -206,7 +338,6 @@ export function parseOverpassBuildings(
     }
 
     const points: LonLat[] = [];
-
     let invalid = false;
 
     for (const p of element.geometry) {
@@ -227,7 +358,6 @@ export function parseOverpassBuildings(
 
     if (invalid || points.length < 3) continue;
 
-    // OSM closed ways repeat the first coordinate.
     if (samePoint(points[0], points[points.length - 1])) {
       points.pop();
     }
@@ -236,16 +366,17 @@ export function parseOverpassBuildings(
 
     const bounds = ringBounds(points);
 
-    // Exclude zero-area geometry.
     if (
       bounds.west === bounds.east ||
       bounds.south === bounds.north
-    ) continue;
+    ) {
+      continue;
+    }
 
     const { heightM, minHeightM } =
       parseBuildingHeight(element.tags);
 
-    const building: BuildingFootprint = {
+    result.push({
       id: `osm:way:${element.id}`,
       name:
         element.tags.name ??
@@ -255,16 +386,15 @@ export function parseOverpassBuildings(
       bounds,
       heightM,
       minHeightM,
-    };
+    });
 
     seen.add(element.id);
-    result.push(building);
   }
 
   return result;
 }
 
-/** Ray casting; points on an edge are also considered inside. */
+/** Ray casting; points on an edge count as inside. */
 export function pointInFootprint(
   lon: number,
   lat: number,
@@ -359,7 +489,10 @@ export function footprintBlocks(
   const clearance = Math.max(0, clearanceM);
   const latPad = clearance / 111_000;
   const lonPad =
-    latPad / Math.max(0.01, Math.cos(lat * Math.PI / 180));
+    latPad / Math.max(
+      0.01,
+      Math.cos(lat * Math.PI / 180),
+    );
 
   const { bounds, ring } = building;
 
@@ -404,13 +537,12 @@ export function isBlocked(
   );
 }
 
-/** Read-only current loaded footprints for debugging or future navmesh. */
 export function getBuildingFootprints():
   readonly BuildingFootprint[] {
   return activeFootprints;
 }
 
-/** Remove only the entities managed by this module. */
+/** Remove only entities managed by this module. */
 export function clearBuildings(): void {
   ++requestGeneration;
   pendingRequest?.abort();
@@ -428,14 +560,11 @@ export function clearBuildings(): void {
 }
 
 /**
- * Load nearby OSM buildings from keyless Overpass and
- * extrude them relative to the sampled terrain.
+ * Load local buildings using ordered Overpass mirrors.
+ * Only call on teleport / area change, not every walker frame.
  *
- * Call on teleport / area change, NOT every walker frame.
- * radiusM is capped to protect the shared public API.
- *
- * Returns number of successfully rendered buildings.
- * Propagates fetch errors so the caller can show a status.
+ * Existing buildings remain visible if every mirror fails.
+ * Returns number of rendered buildings.
  */
 export async function loadBuildingsAround(
   viewer: Viewer,
@@ -467,24 +596,18 @@ export async function loadBuildingsAround(
     `(around:${radius},${lat.toFixed(7)},${lon.toFixed(7)});` +
     `out geom;`;
 
-  const url = `${OVERPASS_URL}?data=${encodeURIComponent(query)}`;
-
   try {
-    const response = await fetch(url, {
+    const data = await fetchOverpassWithFallback(query, {
       signal: controller.signal,
     });
 
-    if (!response.ok) {
-      throw new Error(
-        `Overpass request failed (${response.status})`,
-      );
-    }
+    if (generation !== requestGeneration) return 0;
 
-    const data = (await response.json()) as OverpassResponse;
     const parsed = parseOverpassBuildings(data)
       .slice(0, MAX_BUILDINGS);
 
     const nextEntities: Entity[] = [];
+    const renderedIds = new Set<string>();
 
     const discard = (): number => {
       for (const entity of nextEntities) {
@@ -493,10 +616,13 @@ export async function loadBuildingsAround(
       return 0;
     };
 
-    // Do not start hundreds of simultaneous tile downloads.
-    // Claude's heightAt() internally caches shared terrain tiles.
+    // HeightAt caches shared Terrarium tiles.
+    // Resolve elevations sequentially rather than
+    // starting hundreds of simultaneous tile downloads.
     for (const building of parsed) {
-      if (generation !== requestGeneration) return discard();
+      if (generation !== requestGeneration) {
+        return discard();
+      }
 
       const [centerLon, centerLat] = building.center;
 
@@ -516,13 +642,13 @@ export async function loadBuildingsAround(
             centerLat,
           );
         } catch {
-          // Terrain may temporarily be unavailable.
-          // Omit this extrusion rather than place it at sea level.
           continue;
         }
       }
 
-      if (generation !== requestGeneration) return discard();
+      if (generation !== requestGeneration) {
+        return discard();
+      }
 
       const coordinates: number[] = [];
 
@@ -534,8 +660,10 @@ export async function loadBuildingsAround(
         Cartesian3.fromDegreesArray(coordinates),
       );
 
-      const bottom = groundHeight + building.minHeightM;
-      const roof = groundHeight + building.heightM;
+      const bottom =
+        groundHeight + building.minHeightM;
+      const roof =
+        groundHeight + building.heightM;
 
       const entity = viewer.entities.add({
         name: building.name,
@@ -543,8 +671,9 @@ export async function loadBuildingsAround(
           hierarchy,
           height: roof,
           extrudedHeight: bottom,
-          material: Color.fromCssColorString('#a7b8c8')
-            .withAlpha(0.85),
+          material: Color.fromCssColorString(
+            '#a7b8c8',
+          ).withAlpha(0.85),
           outline: false,
           closeTop: true,
           closeBottom: true,
@@ -555,11 +684,15 @@ export async function loadBuildingsAround(
       });
 
       nextEntities.push(entity);
+      renderedIds.add(building.id);
     }
 
-    // A later teleport may supersede this area.
-    if (generation !== requestGeneration) return discard();
+    if (generation !== requestGeneration) {
+      return discard();
+    }
 
+    // Atomic replacement: old buildings remain until
+    // the new set is completely prepared.
     if (activeViewer) {
       for (const entity of activeEntities) {
         activeViewer.entities.remove(entity);
@@ -568,25 +701,18 @@ export async function loadBuildingsAround(
 
     activeViewer = viewer;
     activeEntities = nextEntities;
-
-    // Include only successfully placed buildings in collision.
-    const rendered = new Set(
-      nextEntities.map((entity) =>
-        entity.properties?.osmId?.getValue(
-          viewer.clock.currentTime,
-        ) as string,
-      ),
-    );
-
     activeFootprints = parsed.filter((building) =>
-      rendered.has(building.id),
+      renderedIds.has(building.id),
     );
 
     return nextEntities.length;
+  } catch (error) {
+    // New teleport / clearBuildings: not a network failure.
+    if (generation !== requestGeneration) return 0;
+    throw error;
   } finally {
     if (pendingRequest === controller) {
       pendingRequest = null;
     }
   }
 }
-

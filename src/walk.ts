@@ -7,8 +7,14 @@ export interface WalkOptions {
   moveSpeed?: number; // meters per second
   runMultiplier?: number;
   mouseSensitivity?: number;
-  /** Steepest slope you can walk UP, degrees. Downhill is always allowed. Default 40. */
+  /** Steepest slope you can walk UP, degrees. Default 35. */
   maxSlopeDeg?: number;
+  /**
+   * Steepest slope you can walk DOWN, degrees. Higher than maxSlopeDeg so you
+   * can always get down off steep ground you landed on, but you can't stroll
+   * off a cliff face. Default 60.
+   */
+  maxDropDeg?: number;
   /**
    * Distance ahead (metres) over which uphill slope is measured. A fixed
    * look-ahead keeps the limit independent of frame rate and walking speed:
@@ -67,6 +73,7 @@ export interface Stance {
 export interface StepRules {
   isBlocked?: (lon: number, lat: number) => boolean;
   maxSlopeDeg: number;
+  maxDropDeg?: number;
   probeDistance: number;
 }
 
@@ -90,15 +97,17 @@ function canStand(from: Stance, lon: number, lat: number, ground: GroundSampler,
   const probe = k > 1 ? ground(probeLon, probeLat) : g;
   const rise = (probe ?? g) - from.ground;
   const run = probe === undefined ? step : step * k;
-  if (rise > 0 && rise / run > Math.tan(CesiumMath.toRadians(rules.maxSlopeDeg))) return undefined;
+  const limitDeg = rise > 0 ? rules.maxSlopeDeg : (rules.maxDropDeg ?? 90);
+  if (limitDeg < 90 && Math.abs(rise) / run > Math.tan(CesiumMath.toRadians(limitDeg))) return undefined;
   return g;
 }
 
 /**
  * Pure step resolution: try to move from `from` toward (toLon, toLat).
 
- * Refuses steps into buildings, uphill steps steeper than maxSlopeDeg
- * (measured over probeDistance) and steps onto terrain that hasn't loaded. If the full
+ * Refuses steps into buildings, steps onto terrain that hasn't loaded, uphill
+ * steps steeper than maxSlopeDeg and downhill steps steeper than maxDropDeg
+ * (cliff edges), both measured over probeDistance. If the full
  * step is refused, slides along the east-west or north-south component so the
  * walker glides along walls and slopes instead of stopping dead.
  */
@@ -136,12 +145,13 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   const eyeHeight = opts.eyeHeight ?? 1.7; // 1.7m average eye height
-  const baseSpeed = opts.moveSpeed ?? 5.0; // 5 m/s walking speed
-  const runMultiplier = opts.runMultiplier ?? 2.5;
+  const baseSpeed = opts.moveSpeed ?? 3.0; // brisk walk; 1.4 m/s is real-life but feels glacial on a mountain
+  const runMultiplier = opts.runMultiplier ?? 3; // Shift: 9 m/s for covering ground
   const sensitivity = opts.mouseSensitivity ?? 0.002;
   const rules: StepRules = {
     isBlocked: opts.isBlocked,
-    maxSlopeDeg: opts.maxSlopeDeg ?? 40,
+    maxSlopeDeg: opts.maxSlopeDeg ?? 35,
+    maxDropDeg: opts.maxDropDeg ?? 60,
     probeDistance: opts.probeDistance ?? 1.5,
   };
 
@@ -183,6 +193,9 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
   let lastTime = performance.now();
   let animationFrameId: number | null = null;
+  // Restored on disable(): Cesium's own mouse controls and the near plane.
+  let savedInputs = true;
+  let savedNear = 1;
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -284,6 +297,15 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       pitch = 0;
       lastTime = performance.now();
 
+      // Cesium's orbit/zoom controls would fight the walker every frame.
+      const ssc = viewer.scene.screenSpaceCameraController;
+      savedInputs = ssc.enableInputs;
+      ssc.enableInputs = false;
+      // Default near plane is 1 m, wider than the 0.4 m wall clearance, so walls would clip.
+      const frustum = viewer.camera.frustum as { near: number };
+      savedNear = frustum.near;
+      frustum.near = 0.1;
+
       viewer.canvas.requestPointerLock();
       window.addEventListener('keydown', onKeyDown);
       window.addEventListener('keyup', onKeyUp);
@@ -302,6 +324,10 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       if (document.pointerLockElement === viewer.canvas) {
         document.exitPointerLock();
       }
+
+      viewer.scene.screenSpaceCameraController.enableInputs = savedInputs;
+      (viewer.camera.frustum as { near: number }).near = savedNear;
+
 
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);

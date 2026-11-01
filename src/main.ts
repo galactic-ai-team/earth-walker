@@ -52,7 +52,7 @@ function flyTo(p: CameraPreset, duration = 2.5): void {
 const BUILDINGS_MAX_HEIGHT_M = 2000;
 const BUILDINGS_RELOAD_M = 150;
 let lastBuildingsCenter: Cartesian3 | null = null;
-viewer.camera.moveEnd.addEventListener(() => {
+function maybeLoadBuildings(): void {
   const c = viewer.camera.positionCartographic;
   const ground = viewer.scene.globe.getHeight(c) ?? 0;
   if (c.height - ground > BUILDINGS_MAX_HEIGHT_M) {
@@ -71,6 +71,16 @@ viewer.camera.moveEnd.addEventListener(() => {
     lastBuildingsCenter = null;
     console.warn('OSM buildings unavailable:', err);
   });
+}
+viewer.camera.moveEnd.addEventListener(maybeLoadBuildings);
+// moveEnd only fires once the camera stops, and a walker moves every frame,
+// so also check twice a second (cheap: no request unless we've moved 150 m).
+let lastBuildingsCheck = 0;
+viewer.scene.postRender.addEventListener(() => {
+  const now = performance.now();
+  if (now - lastBuildingsCheck < 500) return;
+  lastBuildingsCheck = now;
+  maybeLoadBuildings();
 });
 
 const panel = document.getElementById('presets')!;
@@ -108,7 +118,7 @@ walkBtn.addEventListener('click', () => {
     const startLat = CesiumMath.toDegrees(cartographic.latitude);
 
     walker.enable(startLon, startLat);
-    walkBtn.textContent = '🛑 Stop Walking (Esc)';
+    walkBtn.textContent = '🛑 Stop Walking'; // Esc only frees the mouse; click the view to look again
     isWalking = true;
   } else {
     walker.disable();

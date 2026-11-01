@@ -10,6 +10,8 @@ import { addImageryLayers, tuneTileStreaming } from './imagery';
 import { PRESETS, type CameraPreset } from './presets';
 import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
+import { setupSky } from './sky';
+import { attachPermalinkWriter, initPermalink } from './permalink';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
 Ion.defaultAccessToken = '';
@@ -30,6 +32,7 @@ const viewer = new Viewer('cesiumContainer', {
 });
 addImageryLayers(viewer); // lane 4: EOX global + USGS / NYS / swisstopo regional
 tuneTileStreaming(viewer);
+setupSky(viewer); // lane 6 (Dee): built-in sky, fog, real-time sun lighting
 
 function flyTo(p: CameraPreset, duration = 2.5): void {
   viewer.camera.flyTo({
@@ -80,6 +83,11 @@ for (const p of [...PRESETS, ...EXTRA_PRESETS]) {
 }
 
 mountSearchBox(viewer); // lane 5 (Nova): place search + teleport
+// Lane 5 (Nova): shareable locations — a #lat,lon,height,heading hash
+// restores that standing spot on load, and the hash stays updated as the
+// camera settles, so any view can be bookmarked or shared.
+void initPermalink(viewer);
+attachPermalinkWriter(viewer);
 import { createWalkController } from './walk';
 import { isBlocked } from './buildings'; // GPT-6's building collision export
 

@@ -41,21 +41,34 @@ function flyTo(p: CameraPreset, duration = 2.5): void {
     },
     duration,
   });
-  refreshBuildings(p.lon, p.lat, p.height);
 }
 
-// Lane 3 hookup: load OSM buildings around street-level destinations only
-// (Overpass is a shared public API; skip it for high-altitude views).
+// Lane 3 hookup: whenever the camera settles near the ground (preset, search
+// teleport, walking), load OSM buildings around it. Overpass is a shared public
+// API, so skip high-altitude views and only reload after moving ~150 m.
 const BUILDINGS_MAX_HEIGHT_M = 2000;
-function refreshBuildings(lon: number, lat: number, height: number): void {
-  if (height > BUILDINGS_MAX_HEIGHT_M) {
-    clearBuildings();
+const BUILDINGS_RELOAD_M = 150;
+let lastBuildingsCenter: Cartesian3 | null = null;
+viewer.camera.moveEnd.addEventListener(() => {
+  const c = viewer.camera.positionCartographic;
+  const ground = viewer.scene.globe.getHeight(c) ?? 0;
+  if (c.height - ground > BUILDINGS_MAX_HEIGHT_M) {
+    if (lastBuildingsCenter) clearBuildings();
+    lastBuildingsCenter = null;
     return;
   }
-  loadBuildingsAround(viewer, lon, lat).catch((err: unknown) => {
+  const here = Cartesian3.fromRadians(c.longitude, c.latitude, 0);
+  if (lastBuildingsCenter && Cartesian3.distance(here, lastBuildingsCenter) < BUILDINGS_RELOAD_M) return;
+  lastBuildingsCenter = here;
+  loadBuildingsAround(
+    viewer,
+    CesiumMath.toDegrees(c.longitude),
+    CesiumMath.toDegrees(c.latitude),
+  ).catch((err: unknown) => {
+    lastBuildingsCenter = null;
     console.warn('OSM buildings unavailable:', err);
   });
-}
+});
 
 const panel = document.getElementById('presets')!;
 for (const p of [...PRESETS, ...EXTRA_PRESETS]) {

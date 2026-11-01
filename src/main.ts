@@ -8,6 +8,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { createTerrainProvider } from './terrain';
 import { addImageryLayers, tuneTileStreaming } from './imagery';
 import { PRESETS, type CameraPreset } from './presets';
+import { clearBuildings, loadBuildingsAround } from './buildings';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
 Ion.defaultAccessToken = '';
@@ -38,6 +39,20 @@ function flyTo(p: CameraPreset, duration = 2.5): void {
       roll: 0,
     },
     duration,
+  });
+  refreshBuildings(p.lon, p.lat, p.height);
+}
+
+// Lane 3 hookup: load OSM buildings around street-level destinations only
+// (Overpass is a shared public API; skip it for high-altitude views).
+const BUILDINGS_MAX_HEIGHT_M = 2000;
+function refreshBuildings(lon: number, lat: number, height: number): void {
+  if (height > BUILDINGS_MAX_HEIGHT_M) {
+    clearBuildings();
+    return;
+  }
+  loadBuildingsAround(viewer, lon, lat).catch((err: unknown) => {
+    console.warn('OSM buildings unavailable:', err);
   });
 }
 

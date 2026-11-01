@@ -1,23 +1,14 @@
 // src/ui/layout.ts
-// Top-left UI coordination. The preset panel (#presets), search box and walk
-// button each mount themselves; this module just publishes where they should
-// sit so no one overlaps. Purely a positioning helper — it does not create or
-// edit the DOM of the other lanes' panels.
+// Top-left UI coordination. Documents the panel positions agreed across lanes
+// so nobody re-collides later. This module does not create or edit other
+// lanes' DOM beyond applying a position, and it matches what's already shipped:
 //
-// Proposed layout (top-left is a vertical stack; right side reserved):
+//   search  (#3, Nova)    — top-center, top: 12px, translateX(-50%)
+//   presets (#presets)    — top-left,   top: 12px
+//   walk    (#1, Gemini)  — bottom-left, bottom: 20px
 //
-//   ┌─────────────────────────────────────────┐
-//   │ [search box]           (top center)     │
-//   │                                         │
-//   │ [presets]      (top-left, y=72)         │
-//   │                                         │
-//   │ [walk btn]     (bottom-left, y=bottom-16)│
-//   └─────────────────────────────────────────┘
-//
-// Search at top-center keeps it discoverable without hiding the viewport
-// corner where presets live. Presets top-left, walk bottom-left — thumb
-// reach, no overlap with either the search box or the credits (which the
-// imagery layer renders bottom-right).
+// Credits render bottom-right via the imagery layer; Cesium's own nav widgets
+// live top-right by default. The vertical center and bottom-center are free.
 
 export interface AnchorRect {
   top?: string;
@@ -29,33 +20,34 @@ export interface AnchorRect {
 }
 
 /**
- * Canonical positions for the three top-level UI panels. Other modules read
- * these and apply them to their own containers; this module does not touch
- * their DOM.
+ * Canonical positions for the three top-level UI panels, matching what is
+ * already shipped by Nova (#3) and Gemini (#1). Callers apply these to their
+ * own containers; this module does not own their markup.
+ *
+ * If a lane needs to move, edit PANEL_POSITIONS and every panel follows.
  */
 export const PANEL_POSITIONS: Record<'search' | 'presets' | 'walk', AnchorRect> = {
   search: {
-    top: '16px',
+    top: '12px',
     left: '50%',
     transform: 'translateX(-50%)',
     zIndex: 20,
   },
   presets: {
-    top: '72px', // below the centered search box (search is 16px + ~44px tall)
-    left: '16px',
+    top: '12px',
+    left: '12px',
     zIndex: 15,
   },
   walk: {
-    bottom: '16px',
-    left: '16px',
+    bottom: '20px',
+    left: '12px',
     zIndex: 15,
   },
 };
 
 /**
  * Apply PANEL_POSITIONS to an element, if it exists. Safe to call before the
- * element is mounted (returns false). Idempotent — safe to call on every
- * mount/unmount cycle.
+ * element is mounted (returns false). Idempotent.
  */
 export function applyPanelPosition(
   el: HTMLElement | null,

@@ -245,18 +245,37 @@ export interface HeightSamplerOptions {
   zoom?: number;
 }
 
+export interface HeightCache {
+  /** Height in metres; waits for the tile if needed. Rejects if it can't be fetched. */
+  heightAt(lon: number, lat: number): Promise<number>;
+  /**
+   * Height in metres right now if the tile is already loaded; otherwise starts
+   * loading it and returns undefined. Synchronous, so a per-frame loop (the
+   * walker) can call it without awaiting.
+   */
+  tryHeightAt(lon: number, lat: number): number | undefined;
+}
+
 /**
- * Build a heightAt function around a tile loader. The default export below
- * uses the network; tests pass a fake loader.
+ * Build a cached height lookup around a tile loader. The defaults below use
+ * the network; tests pass a fake loader.
  */
-export function createHeightSampler(
-  loadTile: TileHeightLoader,
-  opts: HeightSamplerOptions = {},
-): (lon: number, lat: number) => Promise<number> {
+export function createHeightCache(loadTile: TileHeightLoader, opts: HeightSamplerOptions = {}): HeightCache {
   const cacheSize = Math.max(1, opts.cacheSize ?? 64);
   const zoom = opts.zoom ?? MAX_LEVEL;
   // Map keeps insertion order, so the first key is the least recently used.
   const cache = new Map<string, Promise<Float32Array>>();
+  // Tiles whose download has finished, for synchronous reads.
+  const ready = new Map<string, Float32Array>();
+
+  const evict = (): void => {
+    while (cache.size > cacheSize) {
+
+      const oldest = cache.keys().next().value as string;
+      cache.delete(oldest);
+      ready.delete(oldest);
+    }
+  };
 
   const tile = (x: number, y: number): Promise<Float32Array> => {
     const key = `${zoom}/${x}/${y}`;
@@ -268,24 +287,58 @@ export function createHeightSampler(
     }
     const pending = loadTile(zoom, x, y);
     cache.set(key, pending);
-    pending.catch(() => {
-      if (cache.get(key) === pending) cache.delete(key); // don't cache failures
-    });
-    while (cache.size > cacheSize) {
-      const oldest = cache.keys().next().value as string;
-      cache.delete(oldest);
-    }
+    pending.then(
+      (heights) => {
+        if (cache.get(key) === pending) ready.set(key, heights);
+      },
+      () => {
+        if (cache.get(key) === pending) cache.delete(key); // don't cache failures
+      },
+    );
+    evict();
     return pending;
   };
 
-  return async (lon: number, lat: number): Promise<number> => {
+  const check = (lon: number, lat: number, fn: string): void => {
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
-      throw new RangeError(`heightAt: lon/lat must be finite numbers (got ${lon}, ${lat})`);
+      throw new RangeError(`${fn}: lon/lat must be finite numbers (got ${lon}, ${lat})`);
     }
-    const hit = lonLatToTile(lon, lat, zoom);
-    const heights = await tile(hit.x, hit.y);
-    return sampleBilinear(heights, TILE_SIZE, hit.px, hit.py);
+
   };
+
+  return {
+    async heightAt(lon, lat) {
+      check(lon, lat, 'heightAt');
+      const hit = lonLatToTile(lon, lat, zoom);
+      const heights = await tile(hit.x, hit.y);
+      return sampleBilinear(heights, TILE_SIZE, hit.px, hit.py);
+    },
+    tryHeightAt(lon, lat) {
+      check(lon, lat, 'tryHeightAt');
+      const hit = lonLatToTile(lon, lat, zoom);
+      const key = `${zoom}/${hit.x}/${hit.y}`;
+      const heights = ready.get(key);
+      if (!heights) {
+        void tile(hit.x, hit.y).catch(() => undefined); // start (or keep) loading; errors surface via heightAt
+        return undefined;
+      }
+      tile(hit.x, hit.y); // refresh LRU order
+      return sampleBilinear(heights, TILE_SIZE, hit.px, hit.py);
+    },
+  };
+}
+
+/**
+ * Build a heightAt function around a tile loader (kept for compatibility;
+ * createHeightCache also offers the synchronous tryHeightAt).
+ */
+export function createHeightSampler(
+  loadTile: TileHeightLoader,
+  opts: HeightSamplerOptions = {},
+): (lon: number, lat: number) => Promise<number> {
+
+  const c = createHeightCache(loadTile, opts);
+  return (lon, lat) => c.heightAt(lon, lat);
 }
 
 const networkLoader: TileHeightLoader = async (z, x, y) => {
@@ -294,7 +347,7 @@ const networkLoader: TileHeightLoader = async (z, x, y) => {
   return imageToHeights(await image);
 };
 
-const defaultSampler = createHeightSampler(networkLoader);
+const defaultCache = createHeightCache(networkLoader);
 
 /**
  * Ground height in metres at (lon, lat) in degrees, on the same datum as the
@@ -302,5 +355,13 @@ const defaultSampler = createHeightSampler(networkLoader);
  * Rejects if the tile can't be fetched.
  */
 export async function heightAt(lon: number, lat: number): Promise<number> {
-  return defaultSampler(lon, lat);
+  return defaultCache.heightAt(lon, lat);
+}
+
+/**
+ * Same height as heightAt(), but synchronous: returns undefined (and starts
+ * the download) when the tile isn't in memory yet. For per-frame use.
+ */
+export function tryHeightAt(lon: number, lat: number): number | undefined {
+  return defaultCache.tryHeightAt(lon, lat);
 }

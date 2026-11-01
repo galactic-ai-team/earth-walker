@@ -6,6 +6,7 @@ import {
   GRID_SIZE,
   MAX_LEVEL,
   TILE_SIZE,
+  createHeightCache,
   createHeightSampler,
   createTerrainProvider,
   decodeTerrarium,
@@ -197,4 +198,37 @@ describe('heightAt (via createHeightSampler)', () => {
     await expect(heightAt(Number.NaN, 0)).rejects.toThrow(RangeError);
     await expect(heightAt(0, Infinity)).rejects.toThrow(RangeError);
   });
+});
+describe('tryHeightAt (via createHeightCache)', () => {
+  function flatTile(h: number): Float32Array {
+    return new Float32Array(TILE_SIZE * TILE_SIZE).fill(h);
+  }
+
+  it('returns undefined and starts loading, then answers synchronously once loaded', async () => {
+    let resolve!: (t: Float32Array) => void;
+    const loader = vi.fn(() => new Promise<Float32Array>((r) => (resolve = r)));
+    const c = createHeightCache(loader);
+    expect(c.tryHeightAt(7.66, 45.98)).toBeUndefined();
+    expect(c.tryHeightAt(7.66, 45.98)).toBeUndefined(); // still one download
+    expect(loader).toHaveBeenCalledTimes(1);
+    resolve(flatTile(3200));
+    await c.heightAt(7.66, 45.98);
+    expect(c.tryHeightAt(7.66, 45.98)).toBe(3200);
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed tile is retried on the next call instead of sticking', async () => {
+    const loader = vi
+      .fn<(z: number, x: number, y: number) => Promise<Float32Array>>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(flatTile(10));
+    const c = createHeightCache(loader);
+    expect(c.tryHeightAt(1, 1)).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 0)); // let the rejection settle
+    expect(c.tryHeightAt(1, 1)).toBeUndefined(); // retry starts
+    await c.heightAt(1, 1);
+    expect(c.tryHeightAt(1, 1)).toBe(10);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
 });

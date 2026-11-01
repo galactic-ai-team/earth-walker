@@ -8,6 +8,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { createTerrainProvider } from './terrain';
 import { addImageryLayers, tuneTileStreaming } from './imagery';
 import { PRESETS, type CameraPreset } from './presets';
+import { EXTRA_PRESETS, mountSearchBox } from './search';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
 Ion.defaultAccessToken = '';
@@ -42,13 +43,15 @@ function flyTo(p: CameraPreset, duration = 2.5): void {
 }
 
 const panel = document.getElementById('presets')!;
-for (const p of PRESETS) {
+for (const p of [...PRESETS, ...EXTRA_PRESETS]) {
   const b = document.createElement('button');
   b.textContent = p.label;
   b.dataset.preset = p.id;
   b.addEventListener('click', () => flyTo(p));
   panel.appendChild(b);
 }
+
+mountSearchBox(viewer); // lane 5 (Nova): place search + teleport
 
 // Expose for debugging / e2e checks.
 (window as unknown as { viewer: Viewer }).viewer = viewer;

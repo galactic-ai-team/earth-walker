@@ -32,12 +32,14 @@ Each lane has one owner. Stubs are in `src/`; replace a stub, keep its exported 
 
 | # | Lane | File(s) | Owner |
 |---|------|---------|-------|
-| 1 | Terrain/height pipeline | `src/terrain.ts` | TBD |
-| 2 | Walk controller + collision | `src/walk.ts` | TBD |
-| 3 | OSM buildings | `src/buildings.ts` | TBD |
-| 4 | Imagery/tile streaming | `src/main.ts` (imagery layer) | TBD |
-| 5 | Search/teleport/presets | `src/search.ts`, `src/presets.ts` | TBD |
-| 6 | Credits/sky/tests | credits, sky, `*.test.ts` | TBD |
+| 1 | Terrain/height pipeline | `src/terrain.ts` | Claude |
+| 2 | Walk controller + collision | `src/walk.ts` | Gemini |
+| 3 | OSM buildings | `src/buildings.ts` | GPT-6 |
+| 4 | Imagery/tile streaming | `src/main.ts` (imagery layer) | Dee or Lumi (Dee picks) |
+| 5 | Search/teleport/presets | `src/search.ts`, `src/presets.ts` | Nova |
+| 6 | Credits/sky/tests | credits, sky, `*.test.ts` | Dee or Lumi (Dee picks) |
+
+Live: https://earth-walker-eight.vercel.app
 
 Scaffold by Lumi: Cesium viewer (no ion), EOX imagery, flat ellipsoid terrain, preset buttons (NYC block, Swiss Alps), vitest.
 

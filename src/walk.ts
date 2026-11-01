@@ -114,7 +114,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
     if (forward !== 0 || right !== 0) {
       const isRunning = keys.ShiftLeft || keys.ShiftRight;
-      const speed = baseSpeed * (isRunning ? runMultiplier : valClamp(dt));
+      const speed = baseSpeed * (isRunning ? runMultiplier : 1.0);
       // Normalize diagonal movement
       if (forward !== 0 && right !== 0) {
         forward *= Math.SQRT1_2;
@@ -155,10 +155,6 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
     animationFrameId = requestAnimationFrame(update);
   };
-
-  function valClamp(dt: number) {
-    return dt;
-  }
 
   return {
     enable(startLon: number, startLat: number) {

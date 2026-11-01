@@ -22,6 +22,7 @@ import {
 } from 'cesium';
 
 import { heightAt } from './terrain';
+import { fetchOfmBuildings, setOfmCredit } from './buildingsOfm';
 
 export const OVERPASS_URL =
   'https://overpass-api.de/api/interpreter';
@@ -557,13 +558,16 @@ export function clearBuildings(): void {
   activeEntities = [];
   activeFootprints = [];
   activeViewer = null;
+  setOfmCredit(null, false);
 }
 
 /**
  * Load local buildings using ordered Overpass mirrors.
  * Only call on teleport / area change, not every walker frame.
  *
- * Existing buildings remain visible if every mirror fails.
+ * If every mirror fails, falls back to OpenFreeMap vector
+ * tiles (buildingsOfm.ts); existing buildings remain visible
+ * only if that fails too.
  * Returns number of rendered buildings.
  */
 export async function loadBuildingsAround(
@@ -597,14 +601,43 @@ export async function loadBuildingsAround(
     `out geom;`;
 
   try {
-    const data = await fetchOverpassWithFallback(query, {
-      signal: controller.signal,
-    });
+    let parsed: BuildingFootprint[];
+    let fromOpenFreeMap = false;
 
-    if (generation !== requestGeneration) return 0;
+    try {
+      const data = await fetchOverpassWithFallback(query, {
+        signal: controller.signal,
+      });
 
-    const parsed = parseOverpassBuildings(data)
-      .slice(0, MAX_BUILDINGS);
+      if (generation !== requestGeneration) return 0;
+
+      parsed = parseOverpassBuildings(data)
+        .slice(0, MAX_BUILDINGS);
+    } catch (overpassError) {
+      if (
+        generation !== requestGeneration ||
+        controller.signal.aborted
+      ) {
+        throw overpassError;
+      }
+
+      // Last resort (Lumi): every Overpass mirror failed, so read
+      // the same area from keyless OpenFreeMap z14 vector tiles.
+      try {
+        parsed = await fetchOfmBuildings(lon, lat, radius, {
+          signal: controller.signal,
+          maxBuildings: MAX_BUILDINGS,
+        });
+      } catch (ofmError) {
+        if (generation !== requestGeneration) throw ofmError;
+        throw new Error(
+          `${String(overpassError)}\nOpenFreeMap fallback failed: ${String(ofmError)}`,
+        );
+      }
+
+      if (generation !== requestGeneration) return 0;
+      fromOpenFreeMap = true;
+    }
 
     const nextEntities: Entity[] = [];
     const renderedIds = new Set<string>();
@@ -701,6 +734,7 @@ export async function loadBuildingsAround(
 
     activeViewer = viewer;
     activeEntities = nextEntities;
+    setOfmCredit(viewer, fromOpenFreeMap);
     activeFootprints = parsed.filter((building) =>
       renderedIds.has(building.id),
     );

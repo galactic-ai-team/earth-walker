@@ -15,15 +15,16 @@
 // so a user can bookmark their own block without the team ever storing
 // their address.
 //
-// Ground heights go through groundHeightM(): it uses Claude's tryHeightAt
-// (non-throwing, PR #5) when that export exists and falls back to the
-// throwing heightAt otherwise, returning undefined when terrain is
-// unavailable. The namespace access is deliberate: a hard named import of
-// tryHeightAt would fail typecheck until PR #5 lands.
+// Ground heights go through groundHeightM(): Claude's tryHeightAt is the
+// fast path (synchronous cache read; it returns undefined and starts the
+// tile download when the tile isn't in memory yet), and the async
+// heightAt is the fallback that waits for that download. Undefined comes
+// back only when the tile genuinely can't be fetched — never merely
+// because the cache was cold.
 
 import { Math as CesiumMath, type Viewer } from 'cesium';
 
-import * as terrain from './terrain';
+import { heightAt, tryHeightAt } from './terrain';
 import { teleport } from './search';
 
 export interface PermalinkState {
@@ -35,23 +36,12 @@ export interface PermalinkState {
   headingDeg: number;
 }
 
-type TryHeightAtFn = (lon: number, lat: number) => Promise<number | undefined>;
-
-const tryHeightAt: TryHeightAtFn | undefined = (
-  terrain as { tryHeightAt?: TryHeightAtFn }
-).tryHeightAt;
-
-/** Ground height in metres, or undefined when terrain can't be sampled. */
+/** Ground height in metres, or undefined when terrain can't be fetched. */
 export async function groundHeightM(lon: number, lat: number): Promise<number | undefined> {
-  if (tryHeightAt) {
-    try {
-      return await tryHeightAt(lon, lat);
-    } catch {
-      return undefined;
-    }
-  }
+  const fast = tryHeightAt(lon, lat);
+  if (fast !== undefined) return fast;
   try {
-    return await terrain.heightAt(lon, lat);
+    return await heightAt(lon, lat);
   } catch {
     return undefined;
   }
@@ -150,7 +140,7 @@ export function attachPermalinkWriter(viewer: Viewer): () => void {
 /**
  * If `hash` is a valid permalink, teleport there at the stored height and
  * heading and return true. Returns false (without moving the camera) when
- * there is no valid hash or the ground there can't be sampled yet.
+ * there is no valid hash or the ground there can't be sampled.
  */
 export async function applyPermalink(
   viewer: Viewer,

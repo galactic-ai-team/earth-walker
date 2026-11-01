@@ -100,10 +100,55 @@ void initPermalink(viewer);
 attachPermalinkWriter(viewer);
 import { createWalkController } from './walk';
 import { isBlocked } from './buildings'; // GPT-6's building collision export
+import { createAvatar } from './avatar';
+import { createChaseCam, nextViewMode, type ViewMode } from './chaseCam';
+
+// Lumi: third-person avatar + chase camera. The walker stays the only owner of
+// the player position; avatar and camera just read its state each frame.
+const avatar = createAvatar(viewer);
+let viewMode: ViewMode = 'third';
+let chase: ReturnType<typeof createChaseCam> | null = null;
 
 // Instantiate walk controller with GPT-6's isBlocked obstacle hook
-const walker = createWalkController(viewer, { isBlocked });
+const walker = createWalkController(viewer, {
+  isBlocked,
+  placeCamera: (state, dt) => {
+    avatar.update(state, dt);
+    return viewMode === 'third' && chase !== null && chase.place(state, dt);
+  },
+});
+chase = createChaseCam(viewer, { groundAt: walker.groundAt, isBlocked });
 let isWalking = false;
+
+// View toggle (V) + a small button and controls hint, shown while walking.
+const viewBtn = document.createElement('button');
+viewBtn.style.cssText = 'position: absolute; bottom: 20px; left: 170px; z-index: 1000; padding: 10px 14px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-family: sans-serif; display: none;';
+document.body.appendChild(viewBtn);
+const hint = document.createElement('div');
+hint.textContent = 'WASD move · Shift run · mouse look (click view) · V 1st/3rd person · Esc free mouse';
+hint.style.cssText = 'position: absolute; top: 56px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 6px 10px; background: rgba(0,0,0,0.55); color: #eee; border-radius: 4px; font: 12px sans-serif; pointer-events: none; display: none;';
+document.body.appendChild(hint);
+
+function applyViewMode(): void {
+  viewBtn.textContent = viewMode === 'third' ? '👁 First person (V)' : '🧍 Third person (V)';
+  avatar.setVisible(isWalking && viewMode === 'third');
+  chase?.reset();
+}
+function toggleView(): void {
+  viewMode = nextViewMode(viewMode);
+  applyViewMode();
+}
+viewBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleView();
+  viewBtn.blur();
+});
+window.addEventListener('keydown', (e) => {
+  if (!isWalking || e.code !== 'KeyV' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target as { tagName?: string; isContentEditable?: boolean } | null;
+  if (t?.isContentEditable || (typeof t?.tagName === 'string' && /^(INPUT|TEXTAREA|SELECT)$/i.test(t.tagName))) return;
+  toggleView();
+});
 
 // Create walk toggle button positioned safely at bottom-left
 const walkBtn = document.createElement('button');
@@ -117,16 +162,22 @@ walkBtn.addEventListener('click', () => {
     const startLon = CesiumMath.toDegrees(cartographic.longitude);
     const startLat = CesiumMath.toDegrees(cartographic.latitude);
 
+    viewMode = 'third'; // third-person is the walk-mode default
     walker.enable(startLon, startLat);
     walkBtn.textContent = '🛑 Stop Walking'; // Esc only frees the mouse; click the view to look again
     isWalking = true;
+    viewBtn.style.display = hint.style.display = 'block';
+    applyViewMode();
   } else {
     walker.disable();
     walkBtn.textContent = '🚶 Start Walking';
     isWalking = false;
+    viewBtn.style.display = hint.style.display = 'none';
+    applyViewMode();
   }
 });
 
 
 // Expose for debugging / e2e checks.
 (window as unknown as { viewer: Viewer }).viewer = viewer;
+(window as unknown as { walker: typeof walker }).walker = walker;

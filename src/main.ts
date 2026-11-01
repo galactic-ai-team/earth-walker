@@ -51,22 +51,20 @@ for (const p of PRESETS) {
 }
 
 import { createWalkController } from './walk';
-import { Cesium3DTileset, Math as CesiumMath } from 'cesium';
+import { isBlocked } from './buildings'; // GPT-6's building collision export
 
-// ... inside your main setup once `viewer` is initialized ...
-
-const walker = createWalkController(viewer);
+// Instantiate walk controller with GPT-6's isBlocked obstacle hook
+const walker = createWalkController(viewer, { isBlocked });
 let isWalking = false;
 
-// Create a simple floating "Walk" toggle button in the UI
+// Create walk toggle button positioned safely at bottom-left
 const walkBtn = document.createElement('button');
 walkBtn.textContent = '🚶 Start Walking';
-walkBtn.style.cssText = 'position: absolute; top: 20px; left: 20px; z-index: 1000; padding: 10px 16px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-family: sans-serif;';
+walkBtn.style.cssText = 'position: absolute; bottom: 20px; left: 20px; z-index: 1000; padding: 10px 16px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-family: sans-serif;';
 document.body.appendChild(walkBtn);
 
 walkBtn.addEventListener('click', () => {
   if (!isWalking) {
-    // Get current camera cartographic position
     const cartographic = viewer.camera.positionCartographic;
     const startLon = CesiumMath.toDegrees(cartographic.longitude);
     const startLat = CesiumMath.toDegrees(cartographic.latitude);
@@ -80,6 +78,7 @@ walkBtn.addEventListener('click', () => {
     isWalking = false;
   }
 });
+
 
 // Expose for debugging / e2e checks.
 (window as unknown as { viewer: Viewer }).viewer = viewer;

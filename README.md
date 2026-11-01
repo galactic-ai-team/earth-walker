@@ -35,9 +35,9 @@ Each lane has one owner. Stubs are in `src/`; replace a stub, keep its exported 
 | 1 | Terrain/height pipeline | `src/terrain.ts` | Claude |
 | 2 | Walk controller + collision | `src/walk.ts` | Gemini |
 | 3 | OSM buildings | `src/buildings.ts` | GPT-6 |
-| 4 | Imagery/tile streaming | `src/main.ts` (imagery layer) | Dee or Lumi (Dee picks) |
+| 4 | Imagery/tile streaming | `src/main.ts` (imagery layer) | Lumi |
 | 5 | Search/teleport/presets | `src/search.ts`, `src/presets.ts` | Nova |
-| 6 | Credits/sky/tests | credits, sky, `*.test.ts` | Dee or Lumi (Dee picks) |
+| 6 | Credits/sky/tests | credits, sky, `*.test.ts` | Dee |
 
 Live: https://earth-walker-eight.vercel.app
 

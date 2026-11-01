@@ -486,10 +486,17 @@ export async function loadBuildingsAround(
 
     const nextEntities: Entity[] = [];
 
+    const discard = (): number => {
+      for (const entity of nextEntities) {
+        viewer.entities.remove(entity);
+      }
+      return 0;
+    };
+
     // Do not start hundreds of simultaneous tile downloads.
     // Claude's heightAt() internally caches shared terrain tiles.
     for (const building of parsed) {
-      if (generation !== requestGeneration) return 0;
+      if (generation !== requestGeneration) return discard();
 
       const [centerLon, centerLat] = building.center;
 
@@ -515,7 +522,7 @@ export async function loadBuildingsAround(
         }
       }
 
-      if (generation !== requestGeneration) return 0;
+      if (generation !== requestGeneration) return discard();
 
       const coordinates: number[] = [];
 
@@ -551,12 +558,7 @@ export async function loadBuildingsAround(
     }
 
     // A later teleport may supersede this area.
-    if (generation !== requestGeneration) {
-      for (const entity of nextEntities) {
-        viewer.entities.remove(entity);
-      }
-      return 0;
-    }
+    if (generation !== requestGeneration) return discard();
 
     if (activeViewer) {
       for (const entity of activeEntities) {

@@ -65,5 +65,35 @@ for (const p of PRESETS) {
   panel.appendChild(b);
 }
 
+import { createWalkController } from './walk';
+import { isBlocked } from './buildings'; // GPT-6's building collision export
+
+// Instantiate walk controller with GPT-6's isBlocked obstacle hook
+const walker = createWalkController(viewer, { isBlocked });
+let isWalking = false;
+
+// Create walk toggle button positioned safely at bottom-left
+const walkBtn = document.createElement('button');
+walkBtn.textContent = '🚶 Start Walking';
+walkBtn.style.cssText = 'position: absolute; bottom: 20px; left: 20px; z-index: 1000; padding: 10px 16px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-family: sans-serif;';
+document.body.appendChild(walkBtn);
+
+walkBtn.addEventListener('click', () => {
+  if (!isWalking) {
+    const cartographic = viewer.camera.positionCartographic;
+    const startLon = CesiumMath.toDegrees(cartographic.longitude);
+    const startLat = CesiumMath.toDegrees(cartographic.latitude);
+
+    walker.enable(startLon, startLat);
+    walkBtn.textContent = '🛑 Stop Walking (Esc)';
+    isWalking = true;
+  } else {
+    walker.disable();
+    walkBtn.textContent = '🚶 Start Walking';
+    isWalking = false;
+  }
+});
+
+
 // Expose for debugging / e2e checks.
 (window as unknown as { viewer: Viewer }).viewer = viewer;

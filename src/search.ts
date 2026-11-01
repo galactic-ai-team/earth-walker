@@ -210,7 +210,7 @@ export function mountSearchBox(
 ): { element: HTMLElement; dispose: () => void } {
   const root = document.createElement('div');
   root.style.cssText =
-    'position:absolute;top:12px;left:12px;z-index:10;width:min(420px,80vw);' +
+    'position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:10;width:min(420px,80vw);' +
     'font-family:system-ui,sans-serif;color:#fff;';
 
   const input = document.createElement('input');

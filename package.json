@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "cesium": "^1.140.0"
+    "@mapbox/vector-tile": "^3.0.0",
+    "cesium": "^1.140.0",
+    "pbf": "^5.1.2"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

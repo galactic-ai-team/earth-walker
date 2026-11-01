@@ -81,12 +81,15 @@ describe('resolveStep (ground, slopes, unloaded terrain, sliding)', () => {
     expect(s.ground).toBe(100);
   });
 
-  it('allows a walkable uphill slope and any downhill', () => {
+  it('allows walkable slopes, steep descents, but not stepping off a cliff', () => {
     const gentle = (_lon: number, lat: number) => 100 + Math.tan((20 * Math.PI) / 180) * (lat / M);
     expect(resolveStep({ lon: 0, lat: 0, ground: 100 }, 0, 0.08 * M, gentle, rules).lat).toBeCloseTo(0.08 * M, 12);
+    expect(resolveStep({ lon: 0, lat: 0, ground: 100 }, 0, -0.08 * M, gentle, rules).lat).toBeCloseTo(-0.08 * M, 12);
+    const steepDown = (_lon: number, lat: number) => 100 - Math.tan((50 * Math.PI) / 180) * (lat / M);
+    expect(resolveStep({ lon: 0, lat: 0, ground: 100 }, 0, 0.08 * M, steepDown, rules).lat).toBeCloseTo(0.08 * M, 12);
     const cliffDown = (_lon: number, lat: number) => (lat > 0 ? 20 : 100);
-    const s = resolveStep({ lon: 0, lat: 0, ground: 100 }, 0, 0.08 * M, cliffDown, rules);
-    expect(s.ground).toBe(20);
+    const s = resolveStep({ lon: 0, lat: 0, ground: 100 }, 0, 0.08 * M, cliffDown, { ...rules, maxDropDeg: 60 });
+    expect(s).toEqual({ lon: 0, lat: 0, ground: 100 });
   });
 
   it('waits instead of dropping when the next ground has not loaded', () => {

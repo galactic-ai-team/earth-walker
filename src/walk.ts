@@ -26,7 +26,6 @@ export function calculateMoveOffset(
   const totalRight = right * distanceMeters;
 
   // Calculate movement vector in east/north components
-  // Heading 0 is North (+lat), Heading pi/2 is East (+lon)
   const dNorth = totalForward * Math.cos(headingRad) + totalRight * Math.sin(headingRad);
   const dEast = totalForward * Math.sin(headingRad) - totalRight * Math.cos(headingRad);
 
@@ -85,7 +84,6 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
     heading -= e.movementX * sensitivity;
     pitch -= e.movementY * sensitivity;
 
-    // Clamp pitch to avoid neck-snapping (approx -85 to +85 degrees)
     const maxPitch = CesiumMath.toRadians(85);
     pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
   };
@@ -101,7 +99,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
     if (!enabled) return;
 
     const now = performance.now();
-    const dt = Math.min((now - lastTime) / 1000, 0.1); // cap dt to avoid huge jumps
+    const dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
     let forward = 0;
@@ -115,24 +113,37 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
     if (forward !== 0 || right !== 0) {
       const isRunning = keys.ShiftLeft || keys.ShiftRight;
       const speed = baseSpeed * (isRunning ? runMultiplier : 1.0);
-      // Normalize diagonal movement
       if (forward !== 0 && right !== 0) {
         forward *= Math.SQRT1_2;
         right *= Math.SQRT1_2;
       }
 
       const stepDistance = speed * dt;
-      const nextPos = calculateMoveOffset(lon, lat, heading, forward, right, stepDistance);
+      const targetPos = calculateMoveOffset(lon, lat, heading, forward, right, stepDistance);
 
-      // Check collision / blocking hook if provided
-      const blocked = opts.isBlocked ? opts.isBlocked(nextPos.lon, nextPos.lat) : false;
-      if (!blocked) {
-        lon = nextPos.lon;
-        lat = nextPos.lat;
+      // Sub-step collision checking (4 sub-steps per frame to prevent tunneling through thin walls)
+      const subSteps = 4;
+      let validLon = lon;
+      let validLat = lat;
+
+      for (let i = 1; i <= subSteps; i++) {
+        const fraction = i / subSteps;
+        const subLon = lon + (targetPos.lon - lon) * fraction;
+        const subLat = lat + (targetPos.lat - lat) * fraction;
+
+        const blocked = opts.isBlocked ? opts.isBlocked(subLon, subLat) : false;
+        if (blocked) {
+          break; // Stop at the last safe sub-step
+        } else {
+          validLon = subLon;
+          validLat = subLat;
+        }
       }
+
+      lon = validLon;
+      lat = validLat;
     }
 
-    // Fetch terrain height and ground clamp
     let groundHeight = 0;
     try {
       groundHeight = await heightAt(lon, lat);
@@ -142,7 +153,6 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
     const targetHeight = groundHeight + eyeHeight;
 
-    // Update Cesium camera position & orientation
     const position = Cartesian3.fromDegrees(lon, lat, targetHeight);
     viewer.camera.setView({
       destination: position,

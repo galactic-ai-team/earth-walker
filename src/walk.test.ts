@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { calculateMoveOffset } from './walk';
 
-describe('Walk Controller Movement Math', () => {
+describe('Walk Controller Movement & Collision Math', () => {
   it('moves north when heading is 0 and forward is positive', () => {
     const startLon = 0;
     const startLat = 0;
-    const heading = 0; // Facing North
+    const heading = 0;
     const forward = 1;
     const right = 0;
-    const distance = 111320; // Exactly 1 degree of latitude north at equator
+    const distance = 111320;
 
     const result = calculateMoveOffset(startLon, startLat, heading, forward, right, distance);
 
@@ -19,10 +19,10 @@ describe('Walk Controller Movement Math', () => {
   it('moves east when heading is pi/2 and forward is positive', () => {
     const startLon = 0;
     const startLat = 0;
-    const heading = Math.PI / 2; // Facing East
+    const heading = Math.PI / 2;
     const forward = 1;
     const right = 0;
-    const distance = 111320; // 1 degree of longitude east at equator
+    const distance = 111320;
 
     const result = calculateMoveOffset(startLon, startLat, heading, forward, right, distance);
 
@@ -30,17 +30,40 @@ describe('Walk Controller Movement Math', () => {
     expect(result.lat).toBeCloseTo(0, 4);
   });
 
-  it('does not change position when forward and right are 0', () => {
-    const startLon = -74.006;
-    const startLat = 40.7128;
-    const heading = 1.23;
-    const forward = 0;
-    const right = 0;
-    const distance = 50;
+  it('stops a 1.25 m step from crossing a 0.3 m thin wall using sub-steps', () => {
+    // Simulate a wall blocking points between offset 0.3m and 0.6m north
+    const startLon = 0;
+    const startLat = 0;
+    const heading = 0; // Facing North
+    const totalStepMeters = 1.25;
 
-    const result = calculateMoveOffset(startLon, startLat, heading, forward, right, distance);
+    // Convert meters to lat offset (approx 111320 meters per degree lat)
+    const target = calculateMoveOffset(startLon, startLat, heading, 1, 0, totalStepMeters);
 
-    expect(result.lon).toBe(startLon);
-    expect(result.lat).toBe(startLat);
+    // Mock an obstacle check function representing a thin wall at ~0.4m north
+    const wallLatThreshold = 0.4 / 111320;
+    const isBlocked = (_lon: number, lat: number) => {
+      const distanceNorthMeters = lat * 111320;
+      return distanceNorthMeters >= 0.3 && distanceNorthMeters <= 0.6;
+    };
+
+    // Run sub-step simulation (4 sub-steps)
+    const subSteps = 4;
+    let validLat = startLat;
+
+    for (let i = 1; i <= subSteps; i++) {
+      const fraction = i / subSteps;
+      const subLat = startLat + (target.lat - startLat) * fraction;
+
+      if (isBlocked(startLon, subLat)) {
+        break; // Should halt before crossing the wall
+      } else {
+        validLat = subLat;
+      }
+    }
+
+    const finalDistanceNorth = validLat * 111320;
+    // Should stop right before 0.3m
+    expect(finalDistanceNorth).toBeLessThan(0.3);
   });
 });

@@ -87,10 +87,15 @@ describe('buildNominatimUrl', () => {
 describe('RateLimiter', () => {
   it('spaces concurrent waits at least the interval apart', async () => {
     let t = 0;
-    const limiter = new RateLimiter(1000, () => t, async (ms) => { t += ms; });
-    const resolvedAt: number[] = [];
-    await Promise.all([0, 1, 2].map(() => limiter.wait().then(() => resolvedAt.push(t))));
-    expect(resolvedAt).toEqual([0, 1000, 2000]);
+    const sleeps: number[] = [];
+    const limiter = new RateLimiter(1000, () => t, async (ms) => { sleeps.push(ms); t += ms; });
+    await Promise.all([limiter.wait(), limiter.wait(), limiter.wait()]);
+    // Slots land at t = 0, 1000, 2000. Assert the sleeps, NOT resolution
+    // timestamps: wait() releases its chain in `finally` before its own
+    // promise settles, so a later waiter's sleep can advance the fake
+    // clock before an earlier caller's .then() gets to read it.
+    expect(sleeps).toEqual([1000, 1000]);
+    expect(t).toBe(2000);
   });
 
   it('does not wait again once the interval has passed', async () => {

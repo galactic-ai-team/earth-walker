@@ -7,3 +7,10 @@ html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%;
 }
 .panel button { font: 14px system-ui, sans-serif; padding: 8px 12px; border: 1px solid #fff4; border-radius: 6px; background: #000a; color: #fff; cursor: pointer; }
 .panel button:hover { background: #224a; }
+/* Lumi: Cosmoscope handoff. Back-to-space link top-right (free on desktop); on
+   narrow screens the centred search box covers the top, so drop it to the
+   presets row (top: 84px), on the right. */
+#back-to-space { position: absolute; top: 12px; right: 12px; z-index: 15; font: 14px system-ui, sans-serif; padding: 10px 14px; min-height: 20px; border: 1px solid #7fb2ff88; border-radius: 999px; background: #0b2a5ccc; color: #fff; text-decoration: none; box-shadow: 0 0 14px #3a7bff44; }
+#back-to-space:hover, #back-to-space:focus-visible { background: #1a4a96; }
+@media (max-width: 960px) { #back-to-space { top: 84px; } }
+#space-fade { position: fixed; inset: 0; z-index: 100; background: #000; opacity: 1; pointer-events: none; }

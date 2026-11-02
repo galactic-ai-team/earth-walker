@@ -16,7 +16,7 @@ import {
   clearBuildingFacades,
   syncBuildingFacades,
 } from './facades';
-import { clearRoads, loadRoadsAround } from './roads';
+import { attachRoadsAutoLoad } from './roads';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
@@ -102,21 +102,9 @@ viewer.scene.postRender.addEventListener(() => {
   maybeLoadBuildings();
 });
 
-// Lane 5 (Nova): roads + sidewalks settle-load alongside buildings.
-const ROADS_MAX_HEIGHT_M = 2000;
-viewer.camera.moveEnd.addEventListener(() => {
-  const c = viewer.camera.positionCartographic;
-  const ground = viewer.scene.globe.getHeight(c) ?? 0;
-  if (c.height - ground > ROADS_MAX_HEIGHT_M) {
-    clearRoads();
-    return;
-  }
-  loadRoadsAround(
-    viewer,
-    CesiumMath.toDegrees(c.longitude),
-    CesiumMath.toDegrees(c.latitude),
-  ).catch((err: unknown) => console.warn('OSM roads unavailable:', err));
-});
+// Lane 5 (Nova): roads + sidewalks — 500 ms postRender auto-load, so
+// they refresh during long walks, not only when the camera stops.
+attachRoadsAutoLoad(viewer);
 
 const panel = document.getElementById('presets')!;
 for (const p of [...PRESETS, ...EXTRA_PRESETS]) {

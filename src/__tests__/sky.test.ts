@@ -4,7 +4,9 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  atmosphereBrightnessForHour,
   atmosphereHueForHour,
+  atmosphereSaturationForHour,
   fogColorForHour,
   fogDensityForHour,
 } from '../sky';
@@ -61,5 +63,35 @@ describe('fogColorForHour', () => {
     const noon = fogColorForHour(12);
     expect(dawn.red).toBeGreaterThan(dawn.blue);
     expect(noon.blue).toBeGreaterThan(noon.red);
+  });
+});
+
+describe('atmosphereHueForHour', () => {
+  it('is ~0 at noon and midnight, peaks near dawn/dusk', () => {
+    expect(atmosphereHueForHour(12)).toBeLessThan(0.005);
+    expect(atmosphereHueForHour(0)).toBeLessThan(0.01);
+    expect(atmosphereHueForHour(6)).toBeGreaterThan(0.08);
+    expect(atmosphereHueForHour(18)).toBeGreaterThan(0.08);
+  });
+
+  it('is symmetric around noon', () => {
+    expect(atmosphereHueForHour(6)).toBeCloseTo(atmosphereHueForHour(18), 9);
+    expect(atmosphereHueForHour(7)).toBeCloseTo(atmosphereHueForHour(17), 9);
+  });
+});
+
+describe('atmosphereSaturationForHour', () => {
+  it('peaks at dawn/dusk, neutral at noon', () => {
+    expect(atmosphereSaturationForHour(12)).toBeLessThan(0.01);
+    expect(atmosphereSaturationForHour(6)).toBeGreaterThan(0.12);
+    expect(atmosphereSaturationForHour(18)).toBeGreaterThan(0.12);
+  });
+});
+
+describe('atmosphereBrightnessForHour', () => {
+  it('dips at dawn/dusk, neutral at noon', () => {
+    expect(atmosphereBrightnessForHour(12)).toBeGreaterThan(-0.01);
+    expect(atmosphereBrightnessForHour(6)).toBeLessThan(-0.06);
+    expect(atmosphereBrightnessForHour(18)).toBeLessThan(-0.06);
   });
 });

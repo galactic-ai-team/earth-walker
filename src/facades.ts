@@ -1,4 +1,3 @@
-
 /**
  * Earth Walker — batched, UV-mapped building facades
  * GPT-6 / Buildings lane
@@ -15,6 +14,7 @@ import {
   Cartesian3,
   Color,
   ComponentDatatype,
+  ConstantProperty,
   Geometry,
   GeometryAttribute,
   GeometryAttributes,
@@ -409,24 +409,30 @@ function roofHierarchy(ring: readonly LonLat[]): PolygonHierarchy {
 }
 
 function makeWallsPrimitive(mesh: WallMesh): Primitive {
+  // Cesium 1.140's GeometryAttributes constructor is zero-arg.
+  // Attributes are assigned after construction.
+  const attributes = new GeometryAttributes();
+
+  attributes.position = new GeometryAttribute({
+    componentDatatype: ComponentDatatype.DOUBLE,
+    componentsPerAttribute: 3,
+    values: mesh.positions,
+  });
+
+  attributes.normal = new GeometryAttribute({
+    componentDatatype: ComponentDatatype.FLOAT,
+    componentsPerAttribute: 3,
+    values: mesh.normals,
+  });
+
+  attributes.st = new GeometryAttribute({
+    componentDatatype: ComponentDatatype.FLOAT,
+    componentsPerAttribute: 2,
+    values: mesh.st,
+  });
+
   const geometry = new Geometry({
-    attributes: new GeometryAttributes({
-      position: new GeometryAttribute({
-        componentDatatype: ComponentDatatype.DOUBLE,
-        componentsPerAttribute: 3,
-        values: mesh.positions,
-      }),
-      normal: new GeometryAttribute({
-        componentDatatype: ComponentDatatype.FLOAT,
-        componentsPerAttribute: 3,
-        values: mesh.normals,
-      }),
-      st: new GeometryAttribute({
-        componentDatatype: ComponentDatatype.FLOAT,
-        componentsPerAttribute: 2,
-        values: mesh.st,
-      }),
-    }),
+    attributes,
     indices: mesh.indices,
     primitiveType: PrimitiveType.TRIANGLES,
     boundingSphere: BoundingSphere.fromVertices(mesh.positions),
@@ -450,13 +456,15 @@ function makeWallsPrimitive(mesh: WallMesh): Primitive {
   });
 }
 
-/** Restore the original entities and destroy the batched walls. */
+/** Restore original entities and destroy the batched walls. */
 export function clearBuildingFacades(): void {
   if (decoratedViewer) {
     for (const decoration of decorations) {
       const polygon = decoration.building.polygon;
+
       if (polygon) {
-        polygon.show = decoration.originalShow ?? true;
+        polygon.show =
+          decoration.originalShow ?? new ConstantProperty(true);
       }
 
       decoratedViewer.entities.remove(decoration.roof);
@@ -473,7 +481,7 @@ export function clearBuildingFacades(): void {
 }
 
 /**
- * Replace the nearest building extrusions with UV-mapped walls.
+ * Replace nearest building extrusions with UV-mapped walls.
  * Flat, solid-colour roof caps stay as individual entities.
  *
  * Existing main.ts calls this after loadBuildingsAround().
@@ -548,8 +556,10 @@ export function syncBuildingFacades(
     const polygon = entity.polygon;
     if (!polygon) continue;
 
+    // Cesium PolygonGraphics.show expects a Property,
+    // not a plain boolean.
     const originalShow = polygon.show;
-    polygon.show = false;
+    polygon.show = new ConstantProperty(false);
 
     const style = styleForBuilding(
       footprint.id,
@@ -567,7 +577,11 @@ export function syncBuildingFacades(
       },
     });
 
-    decorations.push({ building: entity, originalShow, roof });
+    decorations.push({
+      building: entity,
+      originalShow,
+      roof,
+    });
   }
 
   return decorations.length;

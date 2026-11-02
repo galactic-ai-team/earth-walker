@@ -8,7 +8,7 @@ export interface WalkOptions {
   runMultiplier?: number;
   mouseSensitivity?: number;
   collisionRadius?: number;
-  placeCamera?: (state: WalkState, dt: number) => void;
+  placeCamera?: (state: WalkState, dt: number) => boolean;
   gravity?: number;
   jumpSpeed?: number;
 }
@@ -16,8 +16,7 @@ export interface WalkOptions {
 export interface Stance {
   lon: number;
   lat: number;
-  heading: number;
-  pitch: number;
+  ground: number;
 }
 
 export interface StepRules {
@@ -32,11 +31,11 @@ export interface WalkState {
   lon: number;
   lat: number;
   ground: number;
-  feet: number; // height in meters above ellipsoid/ground
+  feet: number;
   heading: number;
   pitch: number;
   speed: number;
-  moveHeading: number;
+  moveHeading: number | undefined;
   eyeHeight: number;
   ready: boolean;
 }
@@ -95,7 +94,7 @@ export function canStand(
 }
 
 /**
- * Claude's core step resolver with slope rules, wall sliding, and sub-steps.
+ * Claude's core step resolver with slope rules, wall sliding, and look-ahead probe.
  */
 export function resolveStep(
   stance: Stance,
@@ -160,7 +159,7 @@ export function resolveStep(
 }
 
 /**
- * Finds a free, unblocked starting position near the target coordinates.
+ * Finds a free, unblocked starting position near the target coordinates using 2m rings out to 40m.
  */
 export function findFreeStart(
   startLon: number,
@@ -171,23 +170,53 @@ export function findFreeStart(
     return { lon: startLon, lat: startLat };
   }
 
-  // Spiral search for a free spot
-  const radiusSteps = 5;
-  const angleSteps = 8;
-  const stepSize = 0.5; // meters
+  const ringStep = 2.0; // meters
+  const maxRadius = 40.0;
+  const directions = 16;
 
-  for (let r = 1; r <= radiusSteps; r++) {
-    const distMeters = r * stepSize;
-    for (let a = 0; a < angleSteps; a++) {
-      const angle = (a / angleSteps) * Math.PI * 2;
-      const offset = calculateMoveOffset(startLon, startLat, angle, 1, 0, distMeters);
-      if (canStand(offset.lon, offset.lat, isBlocked)) {
-        return offset;
+  for (let r = ringStep; r <= maxRadius; r += ringStep) {
+    for (let i = 0; i < directions; i++) {
+      const angle = (i / directions) * Math.PI * 2;
+      const candidate = calculateMoveOffset(startLon, startLat, angle, 1, 0, r);
+      if (canStand(candidate.lon, candidate.lat, isBlocked)) {
+        return candidate;
       }
     }
   }
 
   return { lon: startLon, lat: startLat };
+}
+
+/**
+ * Pure jump physics step helper.
+ */
+export function stepJump(
+  verticalVelocity: number,
+  heightOffset: number,
+  dt: number,
+  gravity: number,
+  jumpRequested: boolean,
+  jumpSpeed: number
+): { verticalVelocity: number; heightOffset: number } {
+  let v = verticalVelocity;
+  let h = heightOffset;
+  const isOnGround = h <= 0.001;
+
+  if (jumpRequested && isOnGround) {
+    v = jumpSpeed;
+  }
+
+  if (!isOnGround || v !== 0 || jumpRequested) {
+    v -= gravity * dt;
+    h += v * dt;
+
+    if (h <= 0) {
+      h = 0;
+      v = 0;
+    }
+  }
+
+  return { verticalVelocity: v, heightOffset: h };
 }
 
 export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
@@ -206,7 +235,8 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   let heading = 0;
   let pitch = 0;
   let currentSpeed = 0;
-  let moveHeading = 0;
+  let moveHeading: number | undefined = undefined;
+  let hasGround = false;
 
   // Jump & vertical physics state
   let verticalVelocity = 0;
@@ -224,13 +254,29 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
   let lastTime = performance.now();
   let animationFrameId: number | null = null;
+  let savedEnableInputs = true;
+  let savedNear = 1.0;
+
+  const isTyping = () => {
+    const active = document.activeElement;
+    if (!active) return false;
+    const tag = active.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || (active as HTMLElement).isContentEditable;
+  };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (isTyping()) return;
     if (keys[e.code] !== undefined) keys[e.code] = true;
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
     if (keys[e.code] !== undefined) keys[e.code] = false;
+  };
+
+  const onBlur = () => {
+    for (const k of Object.keys(keys)) {
+      keys[k] = false;
+    }
   };
 
   const onMouseMove = (e: MouseEvent) => {
@@ -252,7 +298,10 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
   const groundAt = (l: number, lt: number): number => {
     const h = tryHeightAt(l, lt);
-    return h !== undefined ? h : groundHeight;
+    if (h !== undefined) return h;
+    const globeH = viewer.scene.globe.getHeight(viewer.scene.globe.ellipsoid.cartographicToCartesian(new (window as any).Cesium.Cartographic( CesiumMath.toRadians(l), CesiumMath.toRadians(lt) )));
+    if (globeH !== undefined && !isNaN(globeH)) return globeH;
+    return groundHeight;
   };
 
   const update = () => {
@@ -265,12 +314,16 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
     let forward = 0;
     let right = 0;
 
-    if (keys.KeyW) forward += 1;
-    if (keys.KeyS) forward -= 1;
-    if (keys.KeyD) right += 1;
-    if (keys.KeyA) right -= 1;
+    if (!isTyping()) {
+      if (keys.KeyW) forward += 1;
+      if (keys.KeyS) forward -= 1;
+      if (keys.KeyD) right += 1;
+      if (keys.KeyA) right -= 1;
+    }
 
     currentSpeed = 0;
+    moveHeading = undefined;
+
     if (forward !== 0 || right !== 0) {
       const isRunning = keys.ShiftLeft || keys.ShiftRight;
       currentSpeed = baseSpeed * (isRunning ? runMultiplier : 1.0);
@@ -286,7 +339,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       const dLat = rawTarget.lat - lat;
 
       const resolved = resolveStep(
-        { lon, lat, heading, pitch },
+        { lon, lat, ground: groundHeight },
         dLon,
         dLat,
         (l, lt) => tryHeightAt(l, lt),
@@ -297,29 +350,25 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
         lon = resolved.lon;
         lat = resolved.lat;
         groundHeight = resolved.ground;
+        hasGround = true;
       }
     } else {
       const h = tryHeightAt(lon, lat);
       if (h !== undefined) {
         groundHeight = h;
+        hasGround = true;
       }
     }
 
-    // Handle Jump & Gravity physics
-    const isOnGround = heightOffset <= 0.01;
-    if (keys.Space && isOnGround) {
-      verticalVelocity = jumpSpeed;
+    if (!hasGround) {
+      animationFrameId = requestAnimationFrame(update);
+      return;
     }
 
-    if (!isOnGround || verticalVelocity !== 0 || keys.Space) {
-      verticalVelocity -= gravity * dt;
-      heightOffset += verticalVelocity * dt;
-
-      if (heightOffset <= 0) {
-        heightOffset = 0;
-        verticalVelocity = 0;
-      }
-    }
+    // Handle Jump & Gravity physics via pure stepJump helper
+    const jumpRes = stepJump(verticalVelocity, heightOffset, dt, gravity, keys.Space, jumpSpeed);
+    verticalVelocity = jumpRes.verticalVelocity;
+    heightOffset = jumpRes.heightOffset;
 
     const targetHeight = groundHeight + eyeHeight + heightOffset;
 
@@ -333,11 +382,11 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       speed: currentSpeed,
       moveHeading,
       eyeHeight,
-      ready: true,
+      ready: hasGround,
     };
 
-    if (opts.placeCamera) {
-      opts.placeCamera(state, dt);
+    if (opts.placeCamera && opts.placeCamera(state, dt)) {
+      // Handled by custom placeCamera hook (e.g. chase cam)
     } else {
       const position = Cartesian3.fromDegrees(lon, lat, targetHeight);
       viewer.camera.setView({
@@ -359,7 +408,13 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       lat = free.lat;
 
       const h = tryHeightAt(lon, lat);
-      groundHeight = h !== undefined ? h : 0;
+      if (h !== undefined) {
+        groundHeight = h;
+        hasGround = true;
+      } else {
+        groundHeight = 0;
+        hasGround = false;
+      }
 
       heading = viewer.camera.heading;
       pitch = viewer.camera.pitch;
@@ -367,13 +422,17 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       heightOffset = 0;
       lastTime = performance.now();
 
-      viewer.screenSpaceCameraController.enableInputs = false;
+      savedEnableInputs = viewer.scene.screenSpaceCameraController.enableInputs;
+      savedNear = viewer.camera.frustum.near;
+
+      viewer.scene.screenSpaceCameraController.enableInputs = false;
       viewer.scene.screenSpaceCameraController.maximumZoomDistance = Infinity;
       viewer.camera.frustum.near = 0.1;
 
       viewer.canvas.requestPointerLock();
       window.addEventListener('keydown', onKeyDown);
       window.addEventListener('keyup', onKeyUp);
+      window.addEventListener('blur', onBlur);
       viewer.canvas.addEventListener('mousemove', onMouseMove);
       viewer.canvas.addEventListener('click', onClick);
 
@@ -384,8 +443,8 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       if (!enabled) return;
       enabled = false;
 
-      viewer.screenSpaceCameraController.enableInputs = true;
-      viewer.camera.frustum.near = 1.0;
+      viewer.scene.screenSpaceCameraController.enableInputs = savedEnableInputs;
+      viewer.camera.frustum.near = savedNear;
 
       if (document.pointerLockElement === viewer.canvas) {
         document.exitPointerLock();
@@ -393,6 +452,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       viewer.canvas.removeEventListener('mousemove', onMouseMove);
       viewer.canvas.removeEventListener('click', onClick);
 
@@ -413,7 +473,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
         speed: currentSpeed,
         moveHeading,
         eyeHeight,
-        ready: true,
+        ready: hasGround,
       };
     },
 

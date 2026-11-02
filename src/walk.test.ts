@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateMoveOffset, findFreeStart, resolveStep } from './walk';
+import { calculateMoveOffset, findFreeStart, resolveStep, stepJump } from './walk';
 
 describe('Walk Controller Movement Math', () => {
   it('moves north when heading is 0 and forward is positive', () => {
@@ -123,5 +123,25 @@ describe('findFreeStart', () => {
     const s = findFreeStart(0, 0, inBox);
     expect(inBox(s.lon, s.lat)).toBe(false);
     expect(Math.hypot(s.lon, s.lat) * 111320).toBeLessThanOrEqual(8);
+  });
+});
+
+describe('Jump & Gravity Physics', () => {
+  it('initiates jump when Space is pressed on the ground', () => {
+    const res = stepJump(0, 0, 0.016, 14.0, true, 5.0);
+    expect(res.verticalVelocity).toBeGreaterThan(0);
+  });
+
+  it('applies gravity and brings height back to zero upon landing', () => {
+    let v = 5.0;
+    let h = 0;
+    // Simulate multiple frames until landing
+    for (let i = 0; i < 100; i++) {
+      const res = stepJump(v, h, 0.05, 14.0, false, 5.0);
+      v = res.verticalVelocity;
+      h = res.heightOffset;
+      if (h === 0) break;
+    }
+    expect(h).toBe(0);
   });
 });

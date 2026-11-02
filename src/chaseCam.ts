@@ -29,13 +29,13 @@ export interface ChaseConfig {
 }
 
 export const DEFAULT_CHASE: ChaseConfig = {
-  distance: 5,
-  pivotHeight: 1.6,
-  baseElevation: 0.2, // ~1 m above the pivot at 5 m: camera ~2.6 m above the feet
+  distance: 6,
+  pivotHeight: 2.0, // aim just above the head, so the avatar sits in the lower half of the frame
+  baseElevation: 0.22, // ~1.3 m above the pivot at 6 m: camera ~3.3 m above the feet
   minElevation: -0.15,
   maxElevation: 1.2,
   terrainClearance: 0.5,
-  minDistance: 0.8,
+  minDistance: 1.2, // the pivot is above the head now, so stop a little further out
   smoothing: 0.06,
 };
 

@@ -119,6 +119,13 @@ const walker = createWalkController(viewer, {
 });
 chase = createChaseCam(viewer, { groundAt: walker.groundAt, isBlocked });
 let isWalking = false;
+let lastStop: { lon: number; lat: number; camLon: number; camLat: number } | null = null;
+function groundDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const k = Math.PI / 180;
+  const x = (lon2 - lon1) * k * Math.cos(((lat1 + lat2) / 2) * k);
+  const y = (lat2 - lat1) * k;
+  return Math.hypot(x, y) * 6371000;
+}
 
 // View toggle (V) + a small button and controls hint, shown while walking.
 const viewBtn = document.createElement('button');
@@ -159,8 +166,14 @@ document.body.appendChild(walkBtn);
 walkBtn.addEventListener('click', () => {
   if (!isWalking) {
     const cartographic = viewer.camera.positionCartographic;
-    const startLon = CesiumMath.toDegrees(cartographic.longitude);
-    const startLat = CesiumMath.toDegrees(cartographic.latitude);
+    let startLon = CesiumMath.toDegrees(cartographic.longitude);
+    let startLat = CesiumMath.toDegrees(cartographic.latitude);
+    // Resume where the avatar stood if the camera hasn't moved since Stop
+    // (in 3rd person the camera sits ~5 m behind the avatar).
+    if (lastStop && groundDistanceM(lastStop.camLat, lastStop.camLon, startLat, startLon) < 25) {
+      startLon = lastStop.lon;
+      startLat = lastStop.lat;
+    }
 
     viewMode = 'third'; // third-person is the walk-mode default
     walker.enable(startLon, startLat);
@@ -169,6 +182,14 @@ walkBtn.addEventListener('click', () => {
     viewBtn.style.display = hint.style.display = 'block';
     applyViewMode();
   } else {
+    const st = walker.getState();
+    const cam = viewer.camera.positionCartographic;
+    lastStop = {
+      lon: st.lon,
+      lat: st.lat,
+      camLon: CesiumMath.toDegrees(cam.longitude),
+      camLat: CesiumMath.toDegrees(cam.latitude),
+    };
     walker.disable();
     walkBtn.textContent = '🚶 Start Walking';
     isWalking = false;

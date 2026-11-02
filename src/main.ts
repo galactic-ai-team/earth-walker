@@ -12,6 +12,10 @@ import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
 import { clearStreetObjects, isStreetObstacle, loadStreetObjectsAround } from './streetObjects';
 import { setupSky } from './sky';
+import {
+  clearBuildingFacades,
+  syncBuildingFacades,
+} from './facades';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
@@ -59,6 +63,7 @@ function maybeLoadBuildings(): void {
   if (c.height - ground > BUILDINGS_MAX_HEIGHT_M) {
     if (lastBuildingsCenter) {
       clearBuildings();
+      clearBuildingFacades();
       clearStreetObjects();
     }
     lastBuildingsCenter = null;
@@ -70,6 +75,9 @@ function maybeLoadBuildings(): void {
   const lon = CesiumMath.toDegrees(c.longitude);
   const lat = CesiumMath.toDegrees(c.latitude);
   loadBuildingsAround(viewer, lon, lat)
+    .then(() => {
+      syncBuildingFacades(viewer, lon, lat);
+    })
     .catch((err: unknown) => {
       lastBuildingsCenter = null;
       console.warn('OSM buildings unavailable:', err);

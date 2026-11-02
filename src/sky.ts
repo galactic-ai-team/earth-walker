@@ -1,82 +1,120 @@
 // src/sky.ts
-// Sun position, sky atmosphere and lighting for Cesium — free assets only.
-// No Cesium ion: SkyAtmosphere, Sun and the default SunLight are all built-in
-// Cesium primitives that don't hit ion.
+// Sun position, sky atmosphere, lighting, shadows and time-of-day fog.
+// Free assets only: SkyAtmosphere, Sun and SunLight are all Cesium built-ins.
 //
-// Lighting strategy: rely on Cesium's default scene.light, which is a SunLight
-// that already tracks the real sun direction in Earth-fixed space. Earlier
-// versions of this file set a custom DirectionalLight from an ICRF sun vector
-// without the ICRF→fixed rotation, which is wrong — the light direction would
-// be rotated by the Earth's spin angle. Cesium's SunLight handles this
-// correctly, so we don't override it.
+// Lighting strategy: rely on Cesium's default scene.light (SunLight), which
+// already tracks the real sun in Earth-fixed space.
+//
+// Fog: Cesium's Fog in 1.140 has no color property, so the "fog tint" from
+// the original plan is dropped here. Density still varies by hour; a tint
+// would need a different mechanism (e.g. post-process, or a fog-colored
+// hemisphere gradient) — tracked as future work.
+//
+// Sun shadows come from the default SunLight once shadowMap is enabled. Each
+// lane's primitives (buildings, trees, avatar) opt in with castShadow/
+// receiveShadow on their own meshes — this file cannot do that for them.
 
-import { JulianDate, Viewer } from 'cesium';
+import { Color, Viewer } from 'cesium';
+import { TimeOfDay } from './timeOfDay';
 
 export interface SkyOptions {
-  /** Initial time; defaults to now. */
-  startTime?: JulianDate;
-  /** Clock multiplier. 1 = real time (recommended for a walk app). */
-  clockMultiplier?: number;
-  /** Whether to show the Cesium timeline widget. Default false. */
+  /** Show the Cesium timeline widget. Default false. */
   timeline?: boolean;
+  /** Shadow map resolution. Default 2048 (free-tier friendly). */
+  shadowMapSize?: number;
 }
 
 /**
- * Attach sun/sky/lighting to a Viewer. Returns a dispose function (currently
- * a no-op — kept for symmetry with other setup functions and future
- * extensions).
- *
- * - Sky atmosphere: Cesium built-in, no ion.
- * - Sun: Cesium built-in billboard, no ion.
- * - Lighting: Cesium's default SunLight, which tracks the real sun in the
- *   Earth-fixed frame. We do not override it.
+ * Fog density by solar hour — thicker at dawn/dusk, thinner at noon, medium
+ * at night. Pure function; safe to unit test.
  */
-export function setupSky(viewer: Viewer, opts: SkyOptions = {}): () => void {
+export function fogDensityForHour(hour: number): number {
+  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
+  // Dawn/dusk peak around fromNoon ≈ 6 (06:00 / 18:00 solar).
+  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
+  const night = Math.max(0, (fromNoon - 8) / 4);
+  return 0.00012 + 0.00018 * dawnDusk + 0.00008 * night;
+}
+
+/**
+ * Fog tint color by solar hour — warm at dawn/dusk, blue at noon, dark purple
+ * at night. Exported for future use (e.g. a sky-tint overlay, or Cesium's Fog
+ * gaining a color property later). Not wired to scene.fog in this file.
+ */
+export function fogColorForHour(hour: number): Color {
+  const h = ((hour % 24) + 24) % 24;
+  const night = new Color(0.08, 0.09, 0.16, 0.85);
+  const dawn = new Color(0.95, 0.65, 0.45, 0.75);
+  const noon = new Color(0.72, 0.82, 0.92, 0.55);
+  const dusk = new Color(0.85, 0.55, 0.65, 0.75);
+
+  if (h < 5) return night;
+  if (h < 8) return Color.lerp(night, dawn, (h - 5) / 3, new Color());
+  if (h < 10) return Color.lerp(dawn, noon, (h - 8) / 2, new Color());
+  if (h < 15) return noon;
+  if (h < 17) return Color.lerp(noon, dusk, (h - 15) / 2, new Color());
+  if (h < 20) return Color.lerp(dusk, night, (h - 17) / 3, new Color());
+  return night;
+}
+
+/** Atmosphere hue shift by solar hour — warmer near dawn/dusk, neutral at noon. */
+export function atmosphereHueForHour(hour: number): number {
+  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
+  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
+  return 0.08 * dawnDusk;
+}
+
+/**
+ * Attach sun/sky/lighting/shadows/fog to a Viewer. Returns a dispose function
+ * that stops the fog driver.
+ */
+export function setupSky(
+  viewer: Viewer,
+  time: TimeOfDay,
+  opts: SkyOptions = {},
+): () => void {
   const scene = viewer.scene;
 
-  // Built-in atmosphere. All optional-typed in recent Cesium; guard.
   if (scene.skyAtmosphere) {
     scene.skyAtmosphere.show = true;
-    scene.skyAtmosphere.hueShift = 0.0;
     scene.skyAtmosphere.saturationShift = 0.0;
     scene.skyAtmosphere.brightnessShift = 0.0;
   }
 
-  // Fog hides the terrain horizon seam at low altitudes.
-  scene.fog.enabled = true;
-  scene.fog.density = 0.0002;
-
-  // Built-in sun billboard.
   if (scene.sun) {
     scene.sun.show = true;
   }
 
-  // Cesium's SunLight is the default scene.light; leave it in place. Globe
-  // lighting uses it for terrain shading and extrusion lighting.
   scene.globe.enableLighting = true;
   scene.globe.showGroundAtmosphere = true;
 
-  // Clock: real time by default. 60x made the sun race across the sky while
-  // walking; 1 is the right default for a walk app. Callers can override.
-  const start = opts.startTime ?? JulianDate.now();
-  viewer.clock.startTime = start.clone();
-  viewer.clock.currentTime = start.clone();
-  viewer.clock.stopTime = JulianDate.addDays(start, 1, new JulianDate());
-  viewer.clock.clockRange = 1; // CLAMPED
-  viewer.clock.multiplier = opts.clockMultiplier ?? 1;
-  viewer.clock.shouldAnimate = true;
+  // Shadows: Cesium's SunLight casts once shadowMap is on. Buildings, trees
+  // and avatar must set castShadow/receiveShadow on their own primitives.
+  viewer.shadowMap.enabled = true;
+  viewer.shadowMap.size = opts.shadowMapSize ?? 2048;
+  viewer.shadowMap.softShadows = true;
+  scene.globe.shadows = 1; // ShadowMode.ENABLED
+
+  scene.fog.enabled = true;
 
   if (viewer.timeline) {
     const container = viewer.timeline.container;
     if (container instanceof HTMLElement) {
       container.style.display = opts.timeline ? '' : 'none';
     }
-    if (opts.timeline) viewer.timeline.zoomTo(start, viewer.clock.stopTime);
   }
 
-  // No per-frame work needed: SunLight tracks the sun automatically.
-  // Return a dispose function for symmetry with other setup functions.
+  // Drive density and atmosphere hue from time of day. onChange fires
+  // immediately, so the initial state is set here too.
+  const unsubscribe = time.onChange((hour) => {
+    scene.fog.density = fogDensityForHour(hour);
+    if (scene.skyAtmosphere) {
+      scene.skyAtmosphere.hueShift = atmosphereHueForHour(hour);
+    }
+  });
+
   return () => {
-    /* nothing to tear down; viewer owns the light and clock */
+    unsubscribe();
+    viewer.shadowMap.enabled = false;
   };
 }

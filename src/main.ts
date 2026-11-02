@@ -12,6 +12,7 @@ import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
 import { clearStreetObjects, isStreetObstacle, loadStreetObjectsAround } from './streetObjects';
 import { setupSky } from './sky';
+import { clearRoads, loadRoadsAround } from './roads';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
@@ -91,6 +92,22 @@ viewer.scene.postRender.addEventListener(() => {
   if (now - lastBuildingsCheck < 500) return;
   lastBuildingsCheck = now;
   maybeLoadBuildings();
+});
+
+// Lane 5 (Nova): roads + sidewalks settle-load alongside buildings.
+const ROADS_MAX_HEIGHT_M = 2000;
+viewer.camera.moveEnd.addEventListener(() => {
+  const c = viewer.camera.positionCartographic;
+  const ground = viewer.scene.globe.getHeight(c) ?? 0;
+  if (c.height - ground > ROADS_MAX_HEIGHT_M) {
+    clearRoads();
+    return;
+  }
+  loadRoadsAround(
+    viewer,
+    CesiumMath.toDegrees(c.longitude),
+    CesiumMath.toDegrees(c.latitude),
+  ).catch((err: unknown) => console.warn('OSM roads unavailable:', err));
 });
 
 const panel = document.getElementById('presets')!;

@@ -1,4 +1,4 @@
-import { Viewer, Cartesian3, Math as CesiumMath } from 'cesium';
+import { Viewer, Cartesian3, Cartographic, Math as CesiumMath } from 'cesium';
 import { tryHeightAt } from './terrain';
 
 export interface WalkOptions {
@@ -71,30 +71,7 @@ export function calculateMoveOffset(
 }
 
 /**
- * Radial collision check (0.3m clearance ring) to prevent wall/camera clipping.
- */
-export function canStand(
-  lon: number,
-  lat: number,
-  isBlocked?: (lon: number, lat: number) => boolean,
-  radiusMeters = 0.3
-): boolean {
-  if (!isBlocked) return true;
-  if (isBlocked(lon, lat)) return false;
-
-  const latOffset = radiusMeters / 111320;
-  const lonOffset = radiusMeters / (111320 * Math.cos(CesiumMath.toRadians(lat)));
-
-  if (isBlocked(lon + lonOffset, lat)) return false;
-  if (isBlocked(lon - lonOffset, lat)) return false;
-  if (isBlocked(lon, lat + latOffset)) return false;
-  if (isBlocked(lon, lat - latOffset)) return false;
-
-  return true;
-}
-
-/**
- * Claude's core step resolver with slope rules, wall sliding, and look-ahead probe.
+ * Core step resolver with slope rules, wall sliding, and look-ahead probe.
  */
 export function resolveStep(
   stance: Stance,
@@ -103,7 +80,6 @@ export function resolveStep(
   ground: (lon: number, lat: number) => number | undefined,
   rules: StepRules = {}
 ): { lon: number; lat: number; ground: number | undefined } {
-  const radius = rules.collisionRadius ?? 0.3;
   const maxSlopeDeg = rules.maxSlopeDeg ?? 35;
   const maxDropDeg = rules.maxDropDeg ?? 60;
   const probeDistance = rules.probeDistance ?? 1.5;
@@ -117,14 +93,15 @@ export function resolveStep(
   let validLon = stance.lon;
   let validLat = stance.lat;
 
-  // 1. Radial clearance and obstacle check with wall sliding
-  if (canStand(targetLon, targetLat, rules.isBlocked, radius)) {
+  // 1. Obstacle check with wall sliding
+  const isBlocked = rules.isBlocked;
+  if (!isBlocked || !isBlocked(targetLon, targetLat)) {
     validLon = targetLon;
     validLat = targetLat;
   } else {
-    if (canStand(targetLon, stance.lat, rules.isBlocked, radius)) {
+    if (!isBlocked(targetLon, stance.lat)) {
       validLon = targetLon;
-    } else if (canStand(stance.lon, targetLat, rules.isBlocked, radius)) {
+    } else if (!isBlocked(stance.lon, targetLat)) {
       validLat = targetLat;
     }
   }
@@ -134,7 +111,7 @@ export function resolveStep(
   const targetGround = ground(validLon, validLat);
 
   if (startGround === undefined || targetGround === undefined) {
-    return { lon: stance.lon, lat: stance.lat, ground: startGround };
+    return { lon: stance.lon, lat: stance.lat, ground: startGround ?? stance.ground };
   }
 
   // 3. Slope and drop limits using probe distance
@@ -166,7 +143,7 @@ export function findFreeStart(
   startLat: number,
   isBlocked?: (lon: number, lat: number) => boolean
 ): { lon: number; lat: number } {
-  if (!isBlocked || canStand(startLon, startLat, isBlocked)) {
+  if (!isBlocked || !isBlocked(startLon, startLat)) {
     return { lon: startLon, lat: startLat };
   }
 
@@ -178,7 +155,7 @@ export function findFreeStart(
     for (let i = 0; i < directions; i++) {
       const angle = (i / directions) * Math.PI * 2;
       const candidate = calculateMoveOffset(startLon, startLat, angle, 1, 0, r);
-      if (canStand(candidate.lon, candidate.lat, isBlocked)) {
+      if (!isBlocked(candidate.lon, candidate.lat)) {
         return candidate;
       }
     }
@@ -224,7 +201,6 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   const baseSpeed = opts.moveSpeed ?? 3.0;
   const runMultiplier = opts.runMultiplier ?? 3.0;
   const sensitivity = opts.mouseSensitivity ?? 0.002;
-  const collisionRadius = opts.collisionRadius ?? 0.3;
   const gravity = opts.gravity ?? 14.0;
   const jumpSpeed = opts.jumpSpeed ?? 5.0;
 
@@ -256,6 +232,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   let animationFrameId: number | null = null;
   let savedEnableInputs = true;
   let savedNear = 1.0;
+  const scratchCarto = new Cartographic();
 
   const isTyping = () => {
     const active = document.activeElement;
@@ -299,7 +276,8 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   const groundAt = (l: number, lt: number): number => {
     const h = tryHeightAt(l, lt);
     if (h !== undefined) return h;
-    const globeH = viewer.scene.globe.getHeight(viewer.scene.globe.ellipsoid.cartographicToCartesian(new (window as any).Cesium.Cartographic( CesiumMath.toRadians(l), CesiumMath.toRadians(lt) )));
+    Cartographic.fromDegrees(l, lt, 0, scratchCarto);
+    const globeH = viewer.scene.globe.getHeight(scratchCarto);
     if (globeH !== undefined && !isNaN(globeH)) return globeH;
     return groundHeight;
   };
@@ -342,8 +320,8 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
         { lon, lat, ground: groundHeight },
         dLon,
         dLat,
-        (l, lt) => tryHeightAt(l, lt),
-        { isBlocked: opts.isBlocked, collisionRadius }
+        groundAt,
+        { isBlocked: opts.isBlocked }
       );
 
       if (resolved.ground !== undefined) {
@@ -365,7 +343,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       return;
     }
 
-    // Handle Jump & Gravity physics via pure stepJump helper
+    // Handle Jump & Gravity physics via stepJump helper
     const jumpRes = stepJump(verticalVelocity, heightOffset, dt, gravity, keys.Space, jumpSpeed);
     verticalVelocity = jumpRes.verticalVelocity;
     heightOffset = jumpRes.heightOffset;

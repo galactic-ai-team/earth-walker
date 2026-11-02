@@ -10,6 +10,7 @@ import { addImageryLayers, tuneTileStreaming } from './imagery';
 import { PRESETS, type CameraPreset } from './presets';
 import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
+import { clearStreetObjects, isStreetObstacle, loadStreetObjectsAround } from './streetObjects';
 import { setupSky } from './sky';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
@@ -56,21 +57,30 @@ function maybeLoadBuildings(): void {
   const c = viewer.camera.positionCartographic;
   const ground = viewer.scene.globe.getHeight(c) ?? 0;
   if (c.height - ground > BUILDINGS_MAX_HEIGHT_M) {
-    if (lastBuildingsCenter) clearBuildings();
+    if (lastBuildingsCenter) {
+      clearBuildings();
+      clearStreetObjects();
+    }
     lastBuildingsCenter = null;
     return;
   }
   const here = Cartesian3.fromRadians(c.longitude, c.latitude, 0);
   if (lastBuildingsCenter && Cartesian3.distance(here, lastBuildingsCenter) < BUILDINGS_RELOAD_M) return;
   lastBuildingsCenter = here;
-  loadBuildingsAround(
-    viewer,
-    CesiumMath.toDegrees(c.longitude),
-    CesiumMath.toDegrees(c.latitude),
-  ).catch((err: unknown) => {
-    lastBuildingsCenter = null;
-    console.warn('OSM buildings unavailable:', err);
-  });
+  const lon = CesiumMath.toDegrees(c.longitude);
+  const lat = CesiumMath.toDegrees(c.latitude);
+  loadBuildingsAround(viewer, lon, lat)
+    .catch((err: unknown) => {
+      lastBuildingsCenter = null;
+      console.warn('OSM buildings unavailable:', err);
+    })
+    // Trees + street furniture (Claude): after the buildings, so the public
+    // Overpass mirrors see one query at a time and scattered park trees can
+    // skip building footprints.
+    .then(() =>
+      loadStreetObjectsAround(viewer, lon, lat, { exclude: (lo, la) => isBlocked(lo, la, 1) }),
+    )
+    .catch((err: unknown) => console.warn('OSM trees/street furniture unavailable:', err));
 }
 viewer.camera.moveEnd.addEventListener(maybeLoadBuildings);
 // moveEnd only fires once the camera stops, and a walker moves every frame,
@@ -111,7 +121,7 @@ let chase: ReturnType<typeof createChaseCam> | null = null;
 
 // Instantiate walk controller with GPT-6's isBlocked obstacle hook
 const walker = createWalkController(viewer, {
-  isBlocked,
+  isBlocked: (lon, lat) => isBlocked(lon, lat) || isStreetObstacle(lon, lat),
   placeCamera: (state, dt) => {
     avatar.update(state, dt);
     return viewMode === 'third' && chase !== null && chase.place(state, dt);

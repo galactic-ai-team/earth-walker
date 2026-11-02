@@ -19,6 +19,13 @@ import {
 import { attachRoadsAutoLoad } from './roads';
 import { TimeOfDay } from './timeOfDay';
 import { attachPermalinkWriter, initPermalink } from './permalink';
+import {
+  descendFromSpace,
+  fadeInFromBlack,
+  mountBackToSpace,
+  parseSpaceHandoff,
+  strippedHandoffUrl,
+} from './spaceHandoff';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
 Ion.defaultAccessToken = '';
@@ -124,7 +131,28 @@ mountSearchBox(viewer); // lane 5 (Nova): place search + teleport
 // Lane 5 (Nova): shareable locations — a #lat,lon,height,heading hash
 // restores that standing spot on load, and the hash stays updated as the
 // camera settles, so any view can be bookmarked or shared.
-void initPermalink(viewer);
+// Lumi: Cosmoscope handoff. ?from=cosmoscope + a permalink hash = arrive
+// from space (fade in, start in orbit, fly down to the spot, ?hour= sets
+// the sun); otherwise Nova's normal permalink restore. The query is dropped
+// right away so a reload/share is a plain street-level permalink.
+const handoff = parseSpaceHandoff(window.location.search, window.location.hash);
+mountBackToSpace();
+if (handoff.fromCosmoscope) {
+  window.history.replaceState(
+    null,
+    '',
+    strippedHandoffUrl(window.location.pathname, window.location.search, window.location.hash),
+  );
+}
+if (handoff.fromCosmoscope && handoff.target) {
+  if (handoff.hour !== null) time.setHour(handoff.hour);
+  fadeInFromBlack();
+  void descendFromSpace(viewer, handoff.target).catch((err: unknown) =>
+    console.warn('space handoff failed:', err),
+  );
+} else {
+  void initPermalink(viewer);
+}
 attachPermalinkWriter(viewer);
 import { createWalkController } from './walk';
 import { isBlocked } from './buildings'; // GPT-6's building collision export

@@ -25,14 +25,14 @@ describe('chase camera math', () => {
     expect(o.up).toBeCloseTo(5 * Math.sin(0.2));
   });
 
-  it('default rig is ~5 m back and ~2-3 m above the feet', () => {
+  it('default rig is ~6 m back and ~3-3.6 m above the feet', () => {
     const e = orbitElevation(0);
     const o = chaseOffset(0, e, DEFAULT_CHASE.distance);
-    expect(-o.north).toBeGreaterThan(4);
-    expect(-o.north).toBeLessThan(6);
+    expect(-o.north).toBeGreaterThan(5);
+    expect(-o.north).toBeLessThan(7);
     const above = DEFAULT_CHASE.pivotHeight + o.up;
-    expect(above).toBeGreaterThan(2);
-    expect(above).toBeLessThan(3);
+    expect(above).toBeGreaterThan(3);
+    expect(above).toBeLessThan(3.6);
   });
 
   it('looking down raises the orbit, looking up lowers it, both clamped', () => {

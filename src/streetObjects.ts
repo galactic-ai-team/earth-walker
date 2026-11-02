@@ -12,6 +12,10 @@
 // via tryHeightAt/heightAt, and trunks and poles extend SINK_M below ground
 // so small mismatches with the drawn terrain mesh never leave them floating.
 //
+// Shadows: the batch casts and receives sun shadows (Dee's sky turns the
+// shadow map on), so trees and lamps throw shadows onto the street and catch
+// the shadows of buildings.
+//
 // Collision: isStreetObstacle(lon, lat) answers for trunks, poles, hydrants,
 // bollards and benches (small circles), for the walker. The chase camera
 // should keep using the buildings-only isBlocked, so thin trunks passing
@@ -30,6 +34,7 @@ import {
   Matrix4,
   PerInstanceColorAppearance,
   Primitive,
+  ShadowMode,
   Transforms,
   type Viewer,
 } from 'cesium';
@@ -94,7 +99,6 @@ export interface StreetObject {
   /** Trunk / pole / body radius, metres (also the collision radius). */
   radius: number;
   /** Crown radius for trees, metres (0 otherwise). */
-
   crown: number;
   /** Rotation about the vertical, radians (benches; varies shapes a little). */
   yaw: number;
@@ -159,7 +163,6 @@ function toRing(geometry: Geo | undefined): LonLat[] | null {
 /** Pull the drawable features out of an Overpass `out geom` response. */
 export function parseStreetFeatures(data: unknown): StreetFeatures {
   const out: StreetFeatures = { points: [], areas: [], lines: [] };
-
   const elements = (data as { elements?: unknown })?.elements;
   if (!Array.isArray(elements)) return out;
 
@@ -256,7 +259,6 @@ export function scatterInArea(
       const y = gy + (rand() - 0.5) * spacingM * 0.8;
       if (x * x + y * y > radiusM * radiusM) continue;
       if (!pointInRing(x, y, local)) continue;
-
       out.push(fromLocal(x, y, lon0, lat0));
       if (out.length >= max) return out;
     }
@@ -353,7 +355,6 @@ export function planStreetObjects(
   opts: PlanOptions = {},
 ): StreetObject[] {
   const max = opts.maxObjects ?? MAX_OBJECTS;
-
   const within = (lon: number, lat: number): boolean => {
     const [x, y] = toLocal(lon, lat, lon0, lat0);
     return x * x + y * y <= radiusM * radiusM;
@@ -418,7 +419,6 @@ export function partsFor(o: StreetObject): PartSpec[] {
   switch (o.kind) {
     case 'tree': {
       const trunkTop = o.height * 0.45;
-
       const crownH = o.crown * 2.2;
       return [
         { shape: 'cylinder', size: [o.radius * 2, o.radius * 2, trunkTop + SINK_M], center: [0, 0, (trunkTop - SINK_M) / 2], color: TRUNK },
@@ -483,7 +483,6 @@ export function createObstacleIndex(objects: readonly StreetObject[], lon0: numb
         for (let j = cy - 1; j <= cy + 1; j++) {
           const cell = cells.get(`${i},${j}`);
           if (!cell) continue;
-
           for (const [ox, oy, r] of cell) {
             const reach = r + clearanceM;
             if ((x - ox) ** 2 + (y - oy) ** 2 < reach * reach) return true;
@@ -516,7 +515,6 @@ let activeViewer: Viewer | null = null;
 let activePrimitive: Primitive | null = null;
 let activeIndex: ObstacleIndex | null = null;
 let credit: Credit | null = null;
-
 let generation = 0;
 let pending: AbortController | null = null;
 
@@ -645,7 +643,6 @@ export async function loadStreetObjectsAround(
       }
       placed.push(o);
     }
-
     if (stale()) return 0;
 
     const next =
@@ -656,6 +653,7 @@ export async function loadStreetObjectsAround(
             asynchronous: true,
             allowPicking: false,
             releaseGeometryInstances: true,
+            shadows: ShadowMode.ENABLED, // cast and receive
           })
         : null;
 

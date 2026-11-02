@@ -114,6 +114,22 @@ describe('nearestLand', () => {
     expect(await fine(hit!.lon, hit!.lat)).toBeGreaterThan(OCEAN_BELOW_M);
   });
 
+  it('does not stand on US coastal water that the fine tiles report as exactly 0 m', async () => {
+    // 3DEP-style: fine tiles read 0.0 over water (land-only source); coarse tiles carry the real depth.
+    const [coastLon] = destinationPoint(LON0, LAT0, 90, 8_000);
+    const fine: HeightLookup = async (lon) => (lon >= coastLon ? 4 : 0);
+    const coarse: HeightLookup = async (lon) => (lon >= coastLon ? 4 : -24);
+    const hit = await nearestLand(LON0, LAT0, { fine, coarse });
+    expect(hit).not.toBeNull();
+    expect(hit!.distanceM).toBeGreaterThan(8_000); // went to the real coast
+    expect(hit!.height).toBe(4);
+  });
+
+  it('keeps a genuine 0 m spot when the coarse tile agrees it is land', async () => {
+    const hit = await nearestLand(LON0, LAT0, { fine: async () => 0, coarse: async () => 2 });
+    expect(hit).toEqual({ lon: LON0, lat: LAT0, height: 0, distanceM: 0 });
+  });
+
   it('rejects non-finite input', async () => {
     await expect(nearestLand(Number.NaN, 0)).rejects.toThrow(RangeError);
   });

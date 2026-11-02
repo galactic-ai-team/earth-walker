@@ -15,6 +15,11 @@
  * +0.06 m, crosswalks +0.09 m, paths +0.05 m, sidewalks +0.15 m — the
  * sidewalk/road step is what reads as a kerb at street level.
  *
+ * Loading: attachRoadsAutoLoad() polls on postRender every ~500 ms
+ * (the same trick buildings uses) so roads refresh during a long
+ * walk, not only when the camera stops; the loader's own 100 m
+ * centre guard keeps those checks cheap.
+ *
  * Known v1 limits (same caveat Claude documented for the walker):
  * heights are sampled, the drawn terrain mesh is coarser, so on steep
  * ground a ribbon can dip slightly under the mesh between samples.
@@ -33,6 +38,7 @@ import {
   GeometryAttribute,
   GeometryAttributes,
   GeometryInstance,
+  Math as CesiumMath,
   Matrix3,
   Matrix4,
   PerInstanceColorAppearance,
@@ -68,6 +74,8 @@ export const MAX_ROADS = 600;
 export const SUBDIVIDE_M = 10;
 /** A reload centred within this distance of the last one is skipped. */
 export const RELOAD_WITHIN_M = 100;
+/** Above this height over the ground, roads are cleared, not loaded. */
+export const ROADS_MAX_HEIGHT_M = 2000;
 
 export const ROAD_COLORS: Record<RoadKind, string> = {
   road: '#333336',
@@ -343,11 +351,11 @@ export interface LoadRoadsOptions {
 }
 
 /**
- * Load roads + sidewalks around (lon, lat). Call on the same triggers
- * as loadBuildingsAround (camera settle), not every frame. The
- * previous set stays visible until the new one is built. A reload
- * centred within RELOAD_WITHIN_M of the last successful one is a
- * no-op. Returns the number of ways drawn.
+ * Load roads + sidewalks around (lon, lat). Call on camera settle or
+ * from attachRoadsAutoLoad, not every frame. The previous set stays
+ * visible until the new one is built. A reload centred within
+ * RELOAD_WITHIN_M of the last successful one is a no-op. Returns the
+ * number of ways drawn.
  */
 export async function loadRoadsAround(
   viewer: Viewer,
@@ -422,11 +430,13 @@ export async function loadRoadsAround(
 
     const world = new Float64Array(ribbon.positions.length);
     for (let i = 0; i < ribbon.positions.length; i += 3) {
-      Matrix4.multiplyByPoint(
-        enu,
-        scratch.set(ribbon.positions[i], ribbon.positions[i + 1], ribbon.positions[i + 2]),
+      Cartesian3.fromElements(
+        ribbon.positions[i],
+        ribbon.positions[i + 1],
+        ribbon.positions[i + 2],
         scratch,
       );
+      Matrix4.multiplyByPoint(enu, scratch, scratch);
       world[i] = scratch.x;
       world[i + 1] = scratch.y;
       world[i + 2] = scratch.z;
@@ -438,19 +448,21 @@ export async function loadRoadsAround(
       normals[i + 2] = up.z;
     }
 
+    // Cesium 1.140 typings: GeometryAttributes has a no-arg
+    // constructor; attributes are assigned as properties.
+    const attributes = new GeometryAttributes();
+    attributes.position = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.DOUBLE,
+      componentsPerAttribute: 3,
+      values: world,
+    });
+    attributes.normal = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT,
+      componentsPerAttribute: 3,
+      values: normals,
+    });
     const geometry = new Geometry({
-      attributes: new GeometryAttributes({
-        position: new GeometryAttribute({
-          componentDatatype: ComponentDatatype.DOUBLE,
-          componentsPerAttribute: 3,
-          values: world,
-        }),
-        normal: new GeometryAttribute({
-          componentDatatype: ComponentDatatype.FLOAT,
-          componentsPerAttribute: 3,
-          values: normals,
-        }),
-      }),
+      attributes,
       indices: ribbon.indices,
       primitiveType: PrimitiveType.TRIANGLES,
       boundingSphere: BoundingSphere.fromVertices(world),
@@ -492,4 +504,40 @@ export async function loadRoadsAround(
   activeWays = rendered;
   lastCenter = { lon, lat, radiusM };
   return rendered.length;
+}
+
+/**
+ * Keep roads loaded while the camera moves: every intervalMs, if the
+ * camera is near the ground and has moved at least RELOAD_WITHIN_M
+ * from the last attempted centre, (re)load; above ROADS_MAX_HEIGHT_M
+ * over the ground, clear instead. Returns a detach function.
+ */
+export function attachRoadsAutoLoad(viewer: Viewer, intervalMs = 500): () => void {
+  let lastCheck = 0;
+  let lastAttempt: LonLat | null = null;
+  const off = viewer.scene.postRender.addEventListener(() => {
+    const now = performance.now();
+    if (now - lastCheck < intervalMs) return;
+    lastCheck = now;
+
+    const c = viewer.camera.positionCartographic;
+    const ground = viewer.scene.globe.getHeight(c) ?? 0;
+    if (c.height - ground > ROADS_MAX_HEIGHT_M) {
+      if (activePrimitive) clearRoads();
+      lastAttempt = null;
+      return;
+    }
+    const lon = CesiumMath.toDegrees(c.longitude);
+    const lat = CesiumMath.toDegrees(c.latitude);
+    if (lastAttempt) {
+      const [dx, dy] = lonLatToLocal([lon, lat], lastAttempt);
+      if (Math.hypot(dx, dy) < RELOAD_WITHIN_M) return;
+    }
+    lastAttempt = [lon, lat];
+    loadRoadsAround(viewer, lon, lat).catch((err: unknown) => {
+      lastAttempt = null; // let the next check retry
+      console.warn('OSM roads unavailable:', err);
+    });
+  });
+  return off;
 }

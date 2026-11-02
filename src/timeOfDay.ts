@@ -1,29 +1,32 @@
 // src/timeOfDay.ts
-// Scrubable time-of-day driver. Owns an hour value in [0, 24), syncs Cesium's
-// clock to it, and emits (hour, sunDir) on change. Nothing else in the app
-// should touch viewer.clock directly — go through this module so fog,
-// atmosphere and shadows all agree on the time.
+// Scrubable time-of-day driver. Owns a solar-time hour in [0, 24), syncs
+// Cesium's clock to it, and emits on change. Nothing else in the app should
+// touch viewer.clock directly — go through this module so everything agrees
+// on the time.
+//
+// Time basis: LOCAL MEAN SOLAR TIME at the camera's longitude. Hour 9 means
+// "mid-morning wherever you are," not 09:00 UTC. The UTC clock is derived as
+// (solarHour - longitudeDeg / 15) and Cesium is set to that. This makes "9"
+// feel like morning in NYC, Zermatt, and Tokyo without any timezone database.
 
-import { Cartesian3, JulianDate, Simon1994PlanetaryPositions, Viewer } from 'cesium';
+import { JulianDate, Viewer } from 'cesium';
 
 export type TimeOfDayListener = (hour: number) => void;
 
 export class TimeOfDay {
   private viewer: Viewer;
-  private hour: number;
+  private hour: number; // solar hour in [0, 24)
   private listeners = new Set<TimeOfDayListener>();
   private unsub: (() => void) | null = null;
-  private scratch = new Cartesian3();
 
   constructor(viewer: Viewer, startHour = 9) {
     this.viewer = viewer;
     this.hour = ((startHour % 24) + 24) % 24;
     this.apply();
 
-    // Fire listeners on every clock tick so fog/atmosphere follow the clock.
     const remove = viewer.clock.onTick.addEventListener(() => {
-      const h = this.readClock();
-      if (h !== this.hour) {
+      const h = this.readSolarHour();
+      if (Math.abs(h - this.hour) > 1e-6) {
         this.hour = h;
         this.emit();
       }
@@ -31,39 +34,23 @@ export class TimeOfDay {
     this.unsub = remove;
   }
 
-  /** Current hour in [0, 24). */
+  /** Current solar hour in [0, 24). */
   getHour(): number {
     return this.hour;
   }
 
-  /** Set hour and sync the clock. Caller must be on the frame loop (or any). */
+  /** Set solar hour and sync the clock. */
   setHour(hour: number): void {
     this.hour = ((hour % 24) + 24) % 24;
     this.apply();
     this.emit();
   }
 
-  /** Subscribe to hour changes. Returns an unsubscribe function. */
+  /** Subscribe to hour changes. Fires immediately with the current hour. */
   onChange(fn: TimeOfDayListener): () => void {
     this.listeners.add(fn);
     fn(this.hour);
     return () => this.listeners.delete(fn);
-  }
-
-  /**
-   * Unit sun direction in world space at the current hour, given a reference
-   * camera position. Used by shadow quality checks and, if needed, by callers
-   * that want to dim UI by sun angle. Not used internally by fog (fog reads
-   * scene.light directly — Cesium's SunLight already tracks the real sun).
-   */
-  getSunDirection(cameraPosition: Cartesian3, out = new Cartesian3()): Cartesian3 {
-    const jd = this.toJulian(this.hour);
-    Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(jd, this.scratch);
-    Cartesian3.normalize(
-      Cartesian3.subtract(this.scratch, cameraPosition, out),
-      out,
-    );
-    return out;
   }
 
   dispose(): void {
@@ -75,25 +62,39 @@ export class TimeOfDay {
   // --- internals -----------------------------------------------------------
 
   private apply(): void {
-    const jd = this.toJulian(this.hour);
-    this.viewer.clock.currentTime = jd;
+    this.viewer.clock.currentTime = this.toJulian(this.hour);
     this.viewer.clock.shouldAnimate = false;
   }
 
-  private readClock(): number {
+  private readSolarHour(): number {
     const jd = this.viewer.clock.currentTime;
     if (!jd) return this.hour;
     const d = JulianDate.toDate(jd);
-    return d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+    const utcHour = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+    const offset = this.getSolarTimeOffsetHours();
+    return ((utcHour + offset) % 24 + 24) % 24;
   }
 
-  private toJulian(hour: number): JulianDate {
+  private toJulian(solarHour: number): JulianDate {
     const now = new Date();
     const today = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0),
     );
     const jd = JulianDate.fromDate(today);
-    return JulianDate.addSeconds(jd, hour * 3600, new JulianDate());
+    const offset = this.getSolarTimeOffsetHours();
+    const utcHours = solarHour - offset;
+    return JulianDate.addSeconds(jd, utcHours * 3600, new JulianDate());
+  }
+
+  /**
+   * Solar time offset (hours) from UTC at the camera's current longitude.
+   * east positive. 15° of longitude = 1 hour of solar time.
+   */
+  private getSolarTimeOffsetHours(): number {
+    const carto = this.viewer.camera.positionCartographic;
+    if (!carto) return 0;
+    const lonDeg = (carto.longitude * 180) / Math.PI;
+    return lonDeg / 15;
   }
 
   private emit(): void {

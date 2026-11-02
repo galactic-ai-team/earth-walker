@@ -1,14 +1,14 @@
 // src/sky.ts
-// Sun position, sky atmosphere, lighting, shadows and time-of-day fog.
+// Sun position, sky atmosphere, lighting, shadows and time-of-day atmosphere.
 // Free assets only: SkyAtmosphere, Sun and SunLight are all Cesium built-ins.
 //
 // Lighting strategy: rely on Cesium's default scene.light (SunLight), which
 // already tracks the real sun in Earth-fixed space.
 //
-// Fog: Cesium's Fog in 1.140 has no color property, so the "fog tint" from
-// the original plan is dropped here. Density still varies by hour; a tint
-// would need a different mechanism (e.g. post-process, or a fog-colored
-// hemisphere gradient) — tracked as future work.
+// Fog tint note: Cesium's Fog (1.140) has no color property. The atmosphere
+// tint comes from SkyAtmosphere.hueShift/saturationShift/brightnessShift
+// instead, driven by TimeOfDay's solar hour. This is the closest built-in
+// equivalent to tinted fog — the whole sky and horizon warm up at dawn/dusk.
 //
 // Sun shadows come from the default SunLight once shadowMap is enabled. Each
 // lane's primitives (buildings, trees, avatar) opt in with castShadow/
@@ -37,9 +37,40 @@ export function fogDensityForHour(hour: number): number {
 }
 
 /**
- * Fog tint color by solar hour — warm at dawn/dusk, blue at noon, dark purple
- * at night. Exported for future use (e.g. a sky-tint overlay, or Cesium's Fog
- * gaining a color property later). Not wired to scene.fog in this file.
+ * Atmosphere hue shift by solar hour — strongest at dawn/dusk (warm), zero at
+ * noon (neutral blue). Cesium's hueShift rotates the full hue wheel; 0.08 is
+ * a subtle warm push toward orange/red.
+ */
+export function atmosphereHueForHour(hour: number): number {
+  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
+  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
+  // Warm push at dawn/dusk, neutral at noon and midnight.
+  return 0.12 * dawnDusk;
+}
+
+/**
+ * Atmosphere saturation shift by solar hour — more saturated at dawn/dusk so
+ * the warm hue reads as a golden/rose sky rather than a grey one.
+ */
+export function atmosphereSaturationForHour(hour: number): number {
+  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
+  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
+  return 0.18 * dawnDusk;
+}
+
+/**
+ * Atmosphere brightness shift by solar hour — slightly dimmer at dawn/dusk
+ * so the sky doesn't look overexposed when the hue warms up. Neutral at noon.
+ */
+export function atmosphereBrightnessForHour(hour: number): number {
+  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
+  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
+  return -0.10 * dawnDusk;
+}
+
+/**
+ * Fog tint color by solar hour — kept for future use (post-process grade or
+ * Cesium Fog gaining a color property). Not wired to scene.fog.
  */
 export function fogColorForHour(hour: number): Color {
   const h = ((hour % 24) + 24) % 24;
@@ -57,16 +88,9 @@ export function fogColorForHour(hour: number): Color {
   return night;
 }
 
-/** Atmosphere hue shift by solar hour — warmer near dawn/dusk, neutral at noon. */
-export function atmosphereHueForHour(hour: number): number {
-  const fromNoon = Math.abs((((hour % 24) + 24) % 24) - 12);
-  const dawnDusk = Math.exp(-((fromNoon - 6) ** 2) / 4);
-  return 0.08 * dawnDusk;
-}
-
 /**
- * Attach sun/sky/lighting/shadows/fog to a Viewer. Returns a dispose function
- * that stops the fog driver.
+ * Attach sun/sky/lighting/shadows/atmosphere-tint to a Viewer. Returns a
+ * dispose function that stops the time-of-day driver.
  */
 export function setupSky(
   viewer: Viewer,
@@ -77,8 +101,6 @@ export function setupSky(
 
   if (scene.skyAtmosphere) {
     scene.skyAtmosphere.show = true;
-    scene.skyAtmosphere.saturationShift = 0.0;
-    scene.skyAtmosphere.brightnessShift = 0.0;
   }
 
   if (scene.sun) {
@@ -104,12 +126,14 @@ export function setupSky(
     }
   }
 
-  // Drive density and atmosphere hue from time of day. onChange fires
+  // Drive fog density + atmosphere tint from time of day. onChange fires
   // immediately, so the initial state is set here too.
   const unsubscribe = time.onChange((hour) => {
     scene.fog.density = fogDensityForHour(hour);
     if (scene.skyAtmosphere) {
       scene.skyAtmosphere.hueShift = atmosphereHueForHour(hour);
+      scene.skyAtmosphere.saturationShift = atmosphereSaturationForHour(hour);
+      scene.skyAtmosphere.brightnessShift = atmosphereBrightnessForHour(hour);
     }
   });
 

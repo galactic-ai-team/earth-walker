@@ -117,8 +117,16 @@ export function writePermalink(
  */
 export function attachPermalinkWriter(viewer: Viewer): () => void {
   let sampling = false;
+  // Lumi: a settle that arrives while a sample is in flight used to be
+  // dropped, so after the space descent (several settles in a row) the hash
+  // kept the height from an earlier, higher settle. Remember it and take one
+  // more sample when the current one finishes.
+  let pending = false;
   const onMoveEnd = (): void => {
-    if (sampling) return;
+    if (sampling) {
+      pending = true;
+      return;
+    }
     sampling = true;
     void cameraPermalink(viewer)
       .then((state) => {
@@ -127,6 +135,10 @@ export function attachPermalinkWriter(viewer: Viewer): () => void {
       .catch(() => undefined)
       .finally(() => {
         sampling = false;
+        if (pending) {
+          pending = false;
+          onMoveEnd();
+        }
       });
   };
   viewer.camera.moveEnd.addEventListener(onMoveEnd);

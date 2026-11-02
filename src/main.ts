@@ -158,6 +158,7 @@ import { createWalkController } from './walk';
 import { isBlocked } from './buildings'; // GPT-6's building collision export
 import { createAvatar } from './avatar';
 import { createChaseCam, nextViewMode, type ViewMode } from './chaseCam';
+import { keepAboveCredits } from './ui/aboveCredits';
 
 // Lumi: third-person avatar + chase camera. The walker stays the only owner of
 // the player position; avatar and camera just read its state each frame.
@@ -218,6 +219,9 @@ const walkBtn = document.createElement('button');
 walkBtn.textContent = '🚶 Start Walking';
 walkBtn.style.cssText = 'position: absolute; bottom: 20px; left: 20px; z-index: 1000; padding: 10px 16px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-family: sans-serif;';
 document.body.appendChild(walkBtn);
+// Lumi: the credits wrap to several lines on a phone; keep Start Walking and
+// the view toggle above them instead of on top of the attributions.
+keepAboveCredits([walkBtn, viewBtn]);
 
 walkBtn.addEventListener('click', () => {
   if (!isWalking) {

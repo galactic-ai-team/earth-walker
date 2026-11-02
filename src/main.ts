@@ -12,6 +12,7 @@ import { EXTRA_PRESETS, mountSearchBox } from './search';
 import { clearBuildings, loadBuildingsAround } from './buildings';
 import { clearStreetObjects, isStreetObstacle, loadStreetObjectsAround } from './streetObjects';
 import { setupSky } from './sky';
+import { TimeOfDay } from './timeOfDay';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
 // No Cesium ion anywhere: blank the default token so nothing ion-backed loads.
@@ -33,7 +34,11 @@ const viewer = new Viewer('cesiumContainer', {
 });
 addImageryLayers(viewer); // lane 4: EOX global + USGS / NYS / swisstopo regional
 tuneTileStreaming(viewer);
-setupSky(viewer); // lane 6 (Dee): built-in sky, fog, real-time sun lighting
+// Lane 6 (Dee): TimeOfDay is the single owner of the clock (starts 9 AM);
+// setupSky drives sky, sun shadows and fog from it. main.ts never tears the
+// viewer down, so the dispose functions aren't kept.
+const time = new TimeOfDay(viewer, 9);
+setupSky(viewer, time);
 
 function flyTo(p: CameraPreset, duration = 2.5): void {
   viewer.camera.flyTo({

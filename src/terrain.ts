@@ -575,15 +575,19 @@ export function coarseHeightAt(lon: number, lat: number): Promise<number> {
 }
 
 export type LandingPlan =
-  | { kind: 'land'; lon: number; lat: number; ground: number; movedM: number }
+  | { kind: 'land'; lon: number; lat: number; ground: number; movedM: number; place?: string }
   | { kind: 'ocean'; lon: number; lat: number; hoverHeightM: number }
   | { kind: 'unknown'; lon: number; lat: number };
 
 /**
  * Where an arrival from space should end up:
  *   - 'land': the nearest dry ground (possibly the requested spot itself);
- *   - 'ocean': open sea with no land in range; hover OCEAN_HOVER_HEIGHT_M
- *     above sea level at the requested spot, looking at the horizon;
+ *     in open ocean (no land within the search radius) the nearest
+ *     POPULATED_LANDINGS city instead, with `place` set (Lumi: Cosmoscope's
+ *     default Earth view put arrivals in the mid-Pacific, 24N 174E);
+ *   - 'ocean': open sea and the fallback city couldn't be confirmed either;
+ *     hover OCEAN_HOVER_HEIGHT_M above sea level at the requested spot,
+ *     looking at the horizon;
  *   - 'unknown': the terrain at the spot couldn't be fetched, so we can't
  *     tell sea from mountain. Don't hover low; stay high and let the user
  *     search (a low hover could be inside a mountain).
@@ -593,5 +597,100 @@ export async function planLanding(lon: number, lat: number, opts: NearestLandOpt
   if (here === undefined) return { kind: 'unknown', lon, lat };
   const hit = await nearestLand(lon, lat, opts);
   if (hit) return { kind: 'land', lon: hit.lon, lat: hit.lat, ground: hit.height, movedM: hit.distanceM };
+  // Open ocean: go to the nearest big city instead of hovering over water.
+  // Same nearestLand() check there (small radius), so a city point that reads
+  // as water (harbour pixel) still snaps to its shore.
+  const city = nearestPopulated(lon, lat);
+  const there = await nearestLand(city.lon, city.lat, { ...opts, maxRadiusM: POPULATED_SNAP_RADIUS_M }).catch(() => null);
+  if (there) {
+    return {
+      kind: 'land',
+      lon: there.lon,
+      lat: there.lat,
+      ground: there.height,
+      movedM: distanceM(lon, lat, there.lon, there.lat),
+      place: city.name,
+    };
+  }
   return { kind: 'ocean', lon, lat, hoverHeightM: OCEAN_HOVER_HEIGHT_M };
+}
+
+// ---- open-ocean fallback (Lumi) ---------------------------------------------
+// City-centre points on land, spread so every ocean has one within reach:
+// Pacific islands (Honolulu, Suva, Papeete), both coasts of every ocean.
+
+export interface PopulatedPlace {
+  name: string;
+  lon: number;
+  lat: number;
+}
+
+/** How far around a fallback city nearestLand() may look, metres. */
+export const POPULATED_SNAP_RADIUS_M = 20_000;
+
+export const POPULATED_LANDINGS: readonly PopulatedPlace[] = [
+  { name: 'New York', lon: -73.9855, lat: 40.758 },
+  { name: 'Los Angeles', lon: -118.2437, lat: 34.0522 },
+  { name: 'San Francisco', lon: -122.4193, lat: 37.7793 },
+  { name: 'Seattle', lon: -122.3321, lat: 47.6062 },
+  { name: 'Vancouver', lon: -123.1207, lat: 49.2827 },
+  { name: 'Anchorage', lon: -149.9003, lat: 61.2181 },
+  { name: 'Honolulu', lon: -157.8583, lat: 21.3069 },
+  { name: 'Mexico City', lon: -99.1332, lat: 19.4326 },
+  { name: 'Miami', lon: -80.1937, lat: 25.7743 },
+  { name: 'Chicago', lon: -87.6298, lat: 41.8781 },
+  { name: 'Toronto', lon: -79.3832, lat: 43.6532 },
+  { name: 'Halifax', lon: -63.5752, lat: 44.6488 },
+  { name: 'Reykjavik', lon: -21.9426, lat: 64.1466 },
+  { name: 'London', lon: -0.1276, lat: 51.5072 },
+  { name: 'Paris', lon: 2.3522, lat: 48.8566 },
+  { name: 'Lisbon', lon: -9.1393, lat: 38.7223 },
+  { name: 'Madrid', lon: -3.7038, lat: 40.4168 },
+  { name: 'Rome', lon: 12.4964, lat: 41.9028 },
+  { name: 'Berlin', lon: 13.405, lat: 52.52 },
+  { name: 'Moscow', lon: 37.6173, lat: 55.7558 },
+  { name: 'Istanbul', lon: 28.9784, lat: 41.0082 },
+  { name: 'Cairo', lon: 31.2357, lat: 30.0444 },
+  { name: 'Dakar', lon: -17.4677, lat: 14.7167 },
+  { name: 'Lagos', lon: 3.3792, lat: 6.5244 },
+  { name: 'Nairobi', lon: 36.8219, lat: -1.2921 },
+  { name: 'Cape Town', lon: 18.4241, lat: -33.9249 },
+  { name: 'Dubai', lon: 55.2708, lat: 25.2048 },
+  { name: 'Mumbai', lon: 72.8777, lat: 19.076 },
+  { name: 'Delhi', lon: 77.209, lat: 28.6139 },
+  { name: 'Colombo', lon: 79.8612, lat: 6.9271 },
+  { name: 'Bangkok', lon: 100.5018, lat: 13.7563 },
+  { name: 'Singapore', lon: 103.8198, lat: 1.3521 },
+  { name: 'Jakarta', lon: 106.8456, lat: -6.2088 },
+  { name: 'Hong Kong', lon: 114.1694, lat: 22.3193 },
+  { name: 'Manila', lon: 120.9842, lat: 14.5995 },
+  { name: 'Shanghai', lon: 121.4737, lat: 31.2304 },
+  { name: 'Beijing', lon: 116.4074, lat: 39.9042 },
+  { name: 'Seoul', lon: 126.978, lat: 37.5665 },
+  { name: 'Tokyo', lon: 139.6503, lat: 35.6762 },
+  { name: 'Perth', lon: 115.8605, lat: -31.9505 },
+  { name: 'Sydney', lon: 151.2093, lat: -33.8688 },
+  { name: 'Auckland', lon: 174.7633, lat: -36.8485 },
+  { name: 'Suva', lon: 178.4501, lat: -18.1248 },
+  { name: 'Papeete', lon: -149.5585, lat: -17.5516 },
+  { name: 'Lima', lon: -77.0428, lat: -12.0464 },
+  { name: 'Santiago', lon: -70.6693, lat: -33.4489 },
+  { name: 'Buenos Aires', lon: -58.3816, lat: -34.6037 },
+  { name: 'Rio de Janeiro', lon: -43.1729, lat: -22.9068 },
+  { name: 'Sao Paulo', lon: -46.6333, lat: -23.5505 },
+  { name: 'Bogota', lon: -74.0721, lat: 4.711 },
+];
+
+/** Nearest POPULATED_LANDINGS entry to (lon, lat), by great-circle distance. */
+export function nearestPopulated(lon: number, lat: number): PopulatedPlace & { distanceM: number } {
+  let best = POPULATED_LANDINGS[0];
+  let bestD = Infinity;
+  for (const p of POPULATED_LANDINGS) {
+    const d = distanceM(lon, lat, p.lon, p.lat);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return { ...best, distanceM: bestD };
 }

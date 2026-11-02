@@ -439,6 +439,21 @@ export function distanceM(lon1: number, lat1: number, lon2: number, lat2: number
 
 const isLand = (h: number): boolean => h > OCEAN_BELOW_M;
 
+/**
+ * Full-resolution height with one correction: off the US coast the USGS 3DEP
+ * source covers land only, so open water comes out as exactly 0.0 m instead
+ * of its depth. An exact 0 is therefore checked against the coarse tile,
+ * which carries real bathymetry; if that says sea, the coarse depth wins.
+ * (Real land at exactly 0.000 m next to the sea would be treated as sea,
+ * which just means landing a few hundred metres further inland.)
+ */
+async function fineHeight(fine: HeightLookup, coarse: HeightLookup, lon: number, lat: number): Promise<number | undefined> {
+  const h = await safe(fine, lon, lat);
+  if (h !== 0) return h;
+  const c = await safe(coarse, lon, lat);
+  return c !== undefined && c <= OCEAN_BELOW_M ? c : h;
+}
+
 async function safe(lookup: HeightLookup, lon: number, lat: number): Promise<number | undefined> {
   try {
     const h = await lookup(lon, lat);
@@ -458,7 +473,7 @@ export async function nearestLand(lon: number, lat: number, opts: NearestLandOpt
   const coarse = opts.coarse ?? coarseHeightAt;
   const maxR = opts.maxRadiusM ?? LAND_SEARCH_RADIUS_M;
 
-  const here = await safe(fine, lon, lat);
+  const here = await fineHeight(fine, coarse, lon, lat);
   if (here !== undefined && isLand(here)) return { lon, lat, height: here, distanceM: 0 };
 
   let inner = 0;
@@ -531,7 +546,7 @@ async function refineShore(
   for (let i = 0; i < 24 && hi - lo > 50; i++) {
     const mid = (lo + hi) / 2;
     const [x, y] = destinationPoint(lon, lat, bearing, mid);
-    const h = hi - lo > 2_000 ? await safe(coarse, x, y) : ((await safe(fine, x, y)) ?? (await safe(coarse, x, y)));
+    const h = hi - lo > 2_000 ? await safe(coarse, x, y) : ((await fineHeight(fine, coarse, x, y)) ?? (await safe(coarse, x, y)));
     if (h !== undefined && isLand(h)) hi = mid;
     else lo = mid;
   }
@@ -539,7 +554,7 @@ async function refineShore(
   for (let step = 0; step < 6; step++) {
     const d = hi + LAND_INLAND_MARGIN_M * (step + 1);
     const [x, y] = destinationPoint(lon, lat, bearing, d);
-    const h = await safe(fine, x, y);
+    const h = await fineHeight(fine, coarse, x, y);
     if (h !== undefined && isLand(h)) return { lon: x, lat: y, height: h, distanceM: d };
   }
   return null;

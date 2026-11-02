@@ -16,6 +16,7 @@ import {
   clearBuildingFacades,
   syncBuildingFacades,
 } from './facades';
+import { attachRoadsAutoLoad } from './roads';
 import { TimeOfDay } from './timeOfDay';
 import { attachPermalinkWriter, initPermalink } from './permalink';
 
@@ -105,6 +106,10 @@ viewer.scene.postRender.addEventListener(() => {
   lastBuildingsCheck = now;
   maybeLoadBuildings();
 });
+
+// Lane 5 (Nova): roads + sidewalks — 500 ms postRender auto-load, so
+// they refresh during long walks, not only when the camera stops.
+attachRoadsAutoLoad(viewer);
 
 const panel = document.getElementById('presets')!;
 for (const p of [...PRESETS, ...EXTRA_PRESETS]) {

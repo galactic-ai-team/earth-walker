@@ -22,6 +22,34 @@ export interface WalkOptions {
    * would never trigger on continuous terrain. Default 1.5.
    */
   probeDistance?: number;
+  /**
+   * Per-frame camera hook (third-person rigs, replays...). Called after the
+   * walker has moved; return true if it placed the camera itself, false to
+   * keep the default first-person eye. The walker stays the single source of
+   * the player position: hooks read WalkState, they never move the player.
+   */
+  placeCamera?: (state: WalkState, dt: number) => boolean;
+}
+
+/** Read-only snapshot of the walker for avatars / cameras. */
+export interface WalkState {
+  lon: number;
+  lat: number;
+  /** Ground height under the feet, metres. */
+  ground: number;
+  /** Height of the feet, metres (ground today; jumps may lift it). */
+  feet: number;
+  /** Radians, Cesium convention (0 = north, clockwise). Mouse/look heading. */
+  heading: number;
+  /** Radians, negative looks down. */
+  pitch: number;
+  /** Horizontal speed actually achieved this frame, m/s (0 when blocked). */
+  speed: number;
+  /** Direction actually moved this frame (radians, Cesium heading), or undefined when still. */
+  moveHeading: number | undefined;
+  eyeHeight: number;
+  /** False until the ground under the start point has loaded. */
+  ready: boolean;
 }
 
 /**
@@ -204,6 +232,21 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   let stance: Stance = { lon: 0, lat: 0, ground: 0 };
   let heading = 0; // radians, Cesium convention (clockwise from north)
   let pitch = 0; // radians
+  let lastSpeed = 0;
+  let lastMoveHeading: number | undefined;
+
+  const getState = (): WalkState => ({
+    lon: stance.lon,
+    lat: stance.lat,
+    ground: stance.ground,
+    feet: stance.ground,
+    heading,
+    pitch,
+    speed: lastSpeed,
+    moveHeading: lastMoveHeading,
+    eyeHeight,
+    ready: hasGround,
+  });
 
   const keys: Record<string, boolean> = {
     KeyW: false,
@@ -291,8 +334,16 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
           right *= Math.SQRT1_2;
         }
         const next = calculateMoveOffset(stance.lon, stance.lat, heading, forward, right, speed * dt);
+        const before = stance;
         stance = resolveStep(stance, next.lon, next.lat, ground, rules);
+        const dN = (stance.lat - before.lat) * 111320;
+        const dE = (stance.lon - before.lon) * 111320 * Math.cos(CesiumMath.toRadians(stance.lat));
+        const moved = Math.hypot(dN, dE);
+        lastSpeed = dt > 0 ? moved / dt : 0;
+        lastMoveHeading = moved > 1e-4 ? Math.atan2(dE, dN) : undefined;
       } else {
+        lastSpeed = 0;
+        lastMoveHeading = undefined;
         // Standing still: follow the ground as finer tiles load.
         const g = ground(stance.lon, stance.lat);
         if (g !== undefined) stance = { lon: stance.lon, lat: stance.lat, ground: g };
@@ -300,7 +351,7 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
 
     }
 
-    if (hasGround) {
+    if (hasGround && !opts.placeCamera?.(getState(), dt)) {
       viewer.camera.setView({
         destination: Cartesian3.fromDegrees(stance.lon, stance.lat, stance.ground + eyeHeight, undefined, scratchPos),
         orientation: { heading, pitch, roll: 0.0 },
@@ -311,6 +362,13 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
   };
 
   return {
+    /** Snapshot of the player for avatars / camera rigs. */
+    getState,
+    /** The walker's ground sampler (data + drawn surface), for camera terrain clearance. */
+    groundAt: ground,
+    get enabled() {
+      return enabled;
+    },
     enable(startLon: number, startLat: number) {
       if (enabled) return;
       enabled = true;
@@ -320,6 +378,8 @@ export function createWalkController(viewer: Viewer, opts: WalkOptions = {}) {
       // Keep facing wherever the camera was looking (presets and permalinks set a heading).
       heading = viewer.camera.heading;
       pitch = 0;
+      lastSpeed = 0;
+      lastMoveHeading = undefined;
       lastTime = performance.now();
 
       // Cesium's orbit/zoom controls would fight the walker every frame.

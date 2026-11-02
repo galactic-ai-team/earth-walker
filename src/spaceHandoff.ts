@@ -22,7 +22,8 @@
 
 import { Cartesian3, Math as CesiumMath, type Viewer } from 'cesium';
 
-import { groundHeightM, parsePermalink, type PermalinkState } from './permalink';
+import { parsePermalink, type PermalinkState } from './permalink';
+import { planLanding, type LandingPlan } from './terrain';
 import { teleport } from './search';
 
 export const COSMOSCOPE_URL = 'https://cosmoscope-chi.vercel.app/';
@@ -111,31 +112,45 @@ function flyCamera(viewer: Viewer, lon: number, lat: number, heightM: number, he
 }
 
 /**
- * Start in orbit above `t` and fly down to it in two phases: straight down
- * (looking at the ground, so the globe stays in view) to 3 km, then Nova's
- * teleport() levels out to the standing height and heading. If the ground
- * height can't be sampled it stops at 300 m above the ellipsoid, looking
- * down 30 deg, instead of leaving the user in orbit.
+ * Start in orbit above `t` and fly down. Cosmoscope's Earth is untextured, so
+ * the spot is often at sea: planLanding() (Claude, terrain.ts) picks the
+ * nearest dry ground instead, or a hover above open ocean.
+ *   - land:    dive straight down above the landing spot to 3 km, then Nova's
+ *              teleport() levels out to the standing height and heading;
+ *   - ocean:   no land within ~400 km, so glide down to 300 m above the water,
+ *              looking at the horizon;
+ *   - unknown: terrain couldn't be fetched, so stop high (3 km above the
+ *              ellipsoid, looking down 30 deg) rather than risk hovering
+ *              inside a mountain.
  */
-export async function descendFromSpace(viewer: Viewer, t: PermalinkState): Promise<void> {
+export async function descendFromSpace(viewer: Viewer, t: PermalinkState): Promise<LandingPlan['kind']> {
   const s = descentStartPose(t);
   viewer.camera.setView({
     destination: Cartesian3.fromDegrees(s.lon, s.lat, s.heightM),
     orientation: { heading: CesiumMath.toRadians(s.headingDeg), pitch: CesiumMath.toRadians(s.pitchDeg), roll: 0 },
   });
-  const groundP = groundHeightM(t.lon, t.lat).catch(() => undefined);
+  // Start the search now; it runs during the hold (coarse tiles, a few seconds at most).
+  const planP = planLanding(t.lon, t.lat).catch((): LandingPlan => ({ kind: 'unknown', lon: t.lon, lat: t.lat }));
   await new Promise((r) => setTimeout(r, DESCENT_HOLD_MS));
-  const ground = await groundP;
-  await flyCamera(viewer, t.lon, t.lat, (ground ?? 0) + DESCENT_LOOKDOWN_HEIGHT_M, t.headingDeg, -90, DESCENT_PHASE1_S);
-  if (ground === undefined) {
-    console.warn('space handoff: ground height unavailable, stopping above the ellipsoid');
-    await flyCamera(viewer, t.lon, t.lat, 300, t.headingDeg, -30, DESCENT_PHASE2_S);
-    return;
+  const plan = await planP;
+
+  if (plan.kind === 'ocean') {
+    await flyCamera(viewer, plan.lon, plan.lat, plan.hoverHeightM, t.headingDeg, -10, DESCENT_PHASE1_S + DESCENT_PHASE2_S);
+    return plan.kind;
   }
-  await teleport(viewer, t.lon, t.lat, {
+  if (plan.kind === 'unknown') {
+    console.warn('space handoff: terrain unavailable, stopping high above the spot');
+    await flyCamera(viewer, plan.lon, plan.lat, 3_000, t.headingDeg, -30, DESCENT_PHASE1_S + DESCENT_PHASE2_S);
+    return plan.kind;
+  }
+  // From 15,000 km up, aiming the dive at a spot moved a few km (or a few
+  // hundred) to the coast is invisible; it just lands on dry ground.
+  await flyCamera(viewer, plan.lon, plan.lat, plan.ground + DESCENT_LOOKDOWN_HEIGHT_M, t.headingDeg, -90, DESCENT_PHASE1_S);
+  await teleport(viewer, plan.lon, plan.lat, {
     eyeHeightM: t.heightM,
     headingDeg: t.headingDeg,
     duration: DESCENT_PHASE2_S,
-    heightAtFn: async () => ground,
+    heightAtFn: async () => plan.ground,
   });
+  return plan.kind;
 }

@@ -270,7 +270,6 @@ export function createHeightCache(loadTile: TileHeightLoader, opts: HeightSample
 
   const evict = (): void => {
     while (cache.size > cacheSize) {
-
       const oldest = cache.keys().next().value as string;
       cache.delete(oldest);
       ready.delete(oldest);
@@ -303,7 +302,6 @@ export function createHeightCache(loadTile: TileHeightLoader, opts: HeightSample
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
       throw new RangeError(`${fn}: lon/lat must be finite numbers (got ${lon}, ${lat})`);
     }
-
   };
 
   return {
@@ -336,7 +334,6 @@ export function createHeightSampler(
   loadTile: TileHeightLoader,
   opts: HeightSamplerOptions = {},
 ): (lon: number, lat: number) => Promise<number> {
-
   const c = createHeightCache(loadTile, opts);
   return (lon, lat) => c.heightAt(lon, lat);
 }
@@ -364,4 +361,222 @@ export async function heightAt(lon: number, lat: number): Promise<number> {
  */
 export function tryHeightAt(lon: number, lat: number): number | undefined {
   return defaultCache.tryHeightAt(lon, lat);
+}
+
+// ---- nearest land (for arrivals from Cosmoscope) ---------------------------------
+//
+// Cosmoscope's Earth is untextured, so a handoff often lands at sea, where
+// these tiles give the seabed (often thousands of metres down). nearestLand()
+// finds the closest dry ground instead:
+//   1. If the spot itself is land, keep it.
+//   2. Otherwise search outward in rings on coarse zoom-7 tiles (~1.2 km per
+//      pixel, ~300 km per tile, so a 400 km search is at most a handful of
+//      downloads), and take the nearest land point on the first ring with any.
+//   3. Walk back along that bearing to find the shoreline, step a little
+//      inland, and confirm with the full-resolution tiles.
+// "Land" means height above OCEAN_BELOW_M, not above 0: Dutch polders (down to
+// about -7 m) stay land, and shallow water right at a beach counts too, which
+// just means arriving on the beach. The Dead Sea shore (-430 m) is the one
+// real place this would move you away from; it snaps to the nearest higher
+// ground.
+
+/** Heights at or below this count as sea. */
+export const OCEAN_BELOW_M = -10;
+/** Zoom used for the ring search. */
+export const LAND_SEARCH_ZOOM = 7;
+/** Default search radius, metres. */
+export const LAND_SEARCH_RADIUS_M = 400_000;
+/** Ring radii, metres (each ring is searched only if the previous had no land). */
+export const LAND_SEARCH_RINGS_M: readonly number[] = [
+  1_000, 2_500, 5_000, 10_000, 20_000, 40_000, 80_000, 150_000, 250_000, 400_000,
+];
+/** How far inland of the detected shoreline to land, metres. */
+export const LAND_INLAND_MARGIN_M = 150;
+/** Mid-ocean fallback: hover this high above sea level. */
+export const OCEAN_HOVER_HEIGHT_M = 300;
+
+const EARTH_MEAN_RADIUS_M = 6_371_008.8;
+
+export interface LandHit {
+  lon: number;
+  lat: number;
+  /** Ground height there (full-resolution tiles), metres. */
+  height: number;
+  /** Great-circle distance from the requested spot, metres. */
+  distanceM: number;
+}
+
+export type HeightLookup = (lon: number, lat: number) => Promise<number>;
+
+export interface NearestLandOptions {
+  /** Full-resolution heights (default: heightAt). */
+  fine?: HeightLookup;
+  /** Coarse heights for the ring search (default: zoom-7 tiles). */
+  coarse?: HeightLookup;
+  maxRadiusM?: number;
+}
+
+/** Point `distanceM` from (lon, lat) along compass `bearingDeg` (great circle). */
+export function destinationPoint(lon: number, lat: number, bearingDeg: number, distanceM: number): [number, number] {
+  const d = distanceM / EARTH_MEAN_RADIUS_M;
+  const b = (bearingDeg * Math.PI) / 180;
+  const p1 = (lat * Math.PI) / 180;
+  const l1 = (lon * Math.PI) / 180;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  const lonOut = ((((l2 * 180) / Math.PI + 180) % 360) + 360) % 360 - 180;
+  return [lonOut, (p2 * 180) / Math.PI];
+}
+
+/** Great-circle distance between two points, metres. */
+export function distanceM(lon1: number, lat1: number, lon2: number, lat2: number): number {
+  const r = Math.PI / 180;
+  const dp = (lat2 - lat1) * r;
+  const dl = (lon2 - lon1) * r;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dl / 2) ** 2;
+  return 2 * EARTH_MEAN_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+const isLand = (h: number): boolean => h > OCEAN_BELOW_M;
+
+async function safe(lookup: HeightLookup, lon: number, lat: number): Promise<number | undefined> {
+  try {
+    const h = await lookup(lon, lat);
+    return Number.isFinite(h) ? h : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Nearest dry ground to (lon, lat), or null if there's none within the
+ * search radius (open ocean) or the tiles can't be fetched.
+ */
+export async function nearestLand(lon: number, lat: number, opts: NearestLandOptions = {}): Promise<LandHit | null> {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) throw new RangeError('nearestLand: lon/lat must be finite');
+  const fine = opts.fine ?? heightAt;
+  const coarse = opts.coarse ?? coarseHeightAt;
+  const maxR = opts.maxRadiusM ?? LAND_SEARCH_RADIUS_M;
+
+  const here = await safe(fine, lon, lat);
+  if (here !== undefined && isLand(here)) return { lon, lat, height: here, distanceM: 0 };
+
+  let inner = 0;
+  for (const radius of LAND_SEARCH_RINGS_M) {
+    if (radius > maxR) break;
+    // Enough directions that neighbouring samples are <= ~2 km apart, 16..180.
+    const n = Math.max(16, Math.min(180, Math.ceil((2 * Math.PI * radius) / 2_000)));
+    const land: boolean[] = [];
+    for (let i = 0; i < n; i++) {
+      const [x, y] = destinationPoint(lon, lat, (360 * i) / n, radius);
+      const h = await safe(coarse, x, y);
+      land.push(h !== undefined && isLand(h));
+    }
+    // Each run of land samples around the ring is a stretch of coast; the
+    // middle of a run points most directly at it. Refine each (usually one or
+    // two) and keep the closest.
+    let best: LandHit | null = null;
+    for (const bearing of landArcCentres(land)) {
+      const hit = await refineShore(lon, lat, bearing, inner, radius, fine, coarse);
+      if (hit && (!best || hit.distanceM < best.distanceM)) best = hit;
+    }
+    if (best) return best;
+    inner = radius;
+  }
+  return null;
+}
+
+/**
+ * Bearings (degrees) at the middle of each run of `true` in a ring of
+ * samples, treating the ring as circular. A ring that's all land gives one
+ * bearing (0). Exported for tests.
+ */
+export function landArcCentres(land: readonly boolean[]): number[] {
+  const n = land.length;
+  if (n === 0 || !land.includes(true)) return [];
+  if (land.every(Boolean)) return [0];
+  const start = land.indexOf(false); // begin just after a sea sample, so no run wraps
+  const centres: number[] = [];
+  let runStart = -1;
+  for (let k = 1; k <= n; k++) {
+    const i = (start + k) % n;
+    if (land[i] && runStart < 0) runStart = k;
+    if ((!land[i] || k === n) && runStart >= 0) {
+      const runEnd = land[i] ? k : k - 1;
+      const mid = (runStart + runEnd) / 2;
+      centres.push(((((start + mid) % n) * 360) / n + 360) % 360);
+      runStart = -1;
+    }
+  }
+  return centres.slice(0, 6); // a ring through an archipelago: refine the first few only
+}
+
+/**
+ * Along one bearing, find where sea turns to land between `inner` (sea) and
+ * `outer` (land), step inland by the margin, and confirm at full resolution.
+ */
+async function refineShore(
+  lon: number,
+  lat: number,
+  bearing: number,
+  inner: number,
+  outer: number,
+  fine: HeightLookup,
+  coarse: HeightLookup,
+): Promise<LandHit | null> {
+  let lo = inner;
+  let hi = outer;
+  // Bisect on coarse tiles down to ~2 km (no new downloads), then on full
+  // resolution down to ~50 m (a handful of tiles near the coast).
+  for (let i = 0; i < 24 && hi - lo > 50; i++) {
+    const mid = (lo + hi) / 2;
+    const [x, y] = destinationPoint(lon, lat, bearing, mid);
+    const h = hi - lo > 2_000 ? await safe(coarse, x, y) : ((await safe(fine, x, y)) ?? (await safe(coarse, x, y)));
+    if (h !== undefined && isLand(h)) hi = mid;
+    else lo = mid;
+  }
+  // Step inland, then a few more steps if the full-resolution check still says sea.
+  for (let step = 0; step < 6; step++) {
+    const d = hi + LAND_INLAND_MARGIN_M * (step + 1);
+    const [x, y] = destinationPoint(lon, lat, bearing, d);
+    const h = await safe(fine, x, y);
+    if (h !== undefined && isLand(h)) return { lon: x, lat: y, height: h, distanceM: d };
+  }
+  return null;
+}
+
+const coarseCache = createHeightCache(
+  async (z, x, y) => {
+    const image = fetchTileImage(z, x, y);
+    if (!image) throw new Error(`terrain: could not request tile ${z}/${x}/${y}`);
+    return imageToHeights(await image);
+  },
+  { zoom: LAND_SEARCH_ZOOM, cacheSize: 24 },
+);
+
+/** Height from coarse zoom-7 tiles (~1.2 km per pixel); for wide searches only. */
+export function coarseHeightAt(lon: number, lat: number): Promise<number> {
+  return coarseCache.heightAt(lon, lat);
+}
+
+export type LandingPlan =
+  | { kind: 'land'; lon: number; lat: number; ground: number; movedM: number }
+  | { kind: 'ocean'; lon: number; lat: number; hoverHeightM: number }
+  | { kind: 'unknown'; lon: number; lat: number };
+
+/**
+ * Where an arrival from space should end up:
+ *   - 'land': the nearest dry ground (possibly the requested spot itself);
+ *   - 'ocean': open sea with no land in range; hover OCEAN_HOVER_HEIGHT_M
+ *     above sea level at the requested spot, looking at the horizon;
+ *   - 'unknown': the terrain at the spot couldn't be fetched, so we can't
+ *     tell sea from mountain. Don't hover low; stay high and let the user
+ *     search (a low hover could be inside a mountain).
+ */
+export async function planLanding(lon: number, lat: number, opts: NearestLandOptions = {}): Promise<LandingPlan> {
+  const here = await safe(opts.fine ?? heightAt, lon, lat);
+  if (here === undefined) return { kind: 'unknown', lon, lat };
+  const hit = await nearestLand(lon, lat, opts);
+  if (hit) return { kind: 'land', lon: hit.lon, lat: hit.lat, ground: hit.height, movedM: hit.distanceM };
+  return { kind: 'ocean', lon, lat, hoverHeightM: OCEAN_HOVER_HEIGHT_M };
 }
